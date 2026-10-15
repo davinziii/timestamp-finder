@@ -12,7 +12,7 @@ import {
 } from "@/lib/clip";
 import { formatClipLength, formatTimestamp, parseTimestamp } from "@/lib/timestamp";
 import { Button, CheckIcon, CopyButton, DownloadIcon, PlayIcon, type CopyFn } from "./Button";
-import { ClipPreview } from "./ClipPreview";
+import { ClipPreview, useLastValidRange } from "./ClipPreview";
 import { QualityToggle } from "./QualityToggle";
 import { formatBytes, revealClip, type DownloadState, type LocalDownloads } from "./useClipDownloads";
 
@@ -72,6 +72,8 @@ export function ClipEditor({
   const e = parseTimestamp(draft.end);
   const rangeError = checkRange(draft.start, draft.end, videoDuration);
   const rangeOk = s !== null && e !== null && !rangeError;
+  // While a time is half-typed, the preview keeps playing the last valid range.
+  const previewRange = useLastValidRange(rangeOk ? { start: s, end: e } : null, null);
   const nameMissing = !draft.name.trim() && !fallbackName;
   const spec = nameMissing ? null : draftToSpec(videoId, draft, quality, videoDuration, fallbackName);
   const busy = download?.status === "running" || download?.status === "queued";
@@ -149,7 +151,7 @@ export function ClipEditor({
         {showPreview && (
           <Button
             variant={previewing ? "secondary" : "ghost"}
-            disabled={!rangeOk}
+            disabled={!previewRange}
             onClick={() => setPreviewing((p) => !p)}
             aria-pressed={previewing}
           >
@@ -172,7 +174,9 @@ export function ClipEditor({
         />
       </div>
 
-      {showPreview && previewing && rangeOk && <ClipPreview videoId={videoId} start={s} end={e} />}
+      {showPreview && previewing && previewRange && (
+        <ClipPreview videoId={videoId} start={previewRange.start} end={previewRange.end} />
+      )}
       {download && <DownloadStatus state={download} />}
       {!canDownload && local.status === "unavailable" && (
         <p className="mt-3 text-xs text-faint">Run the copied command with yt-dlp to save the clip. {local.reason}</p>

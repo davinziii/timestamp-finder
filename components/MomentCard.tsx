@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { useLayoutEffect, useState } from "react";
-import type { ClipDraft, ClipSpec } from "@/lib/clip";
-import { formatClipLength, formatTimestamp } from "@/lib/timestamp";
+import { checkRange, type ClipDraft, type ClipSpec } from "@/lib/clip";
+import { formatClipLength, formatTimestamp, parseTimestamp } from "@/lib/timestamp";
 import { buildTimestampUrl } from "@/lib/youtube";
 import { CATEGORY_LABELS, type ClipPotential, type Moment } from "@/types/moments";
 import { buttonClass, CopyButton, PlayIcon, type CopyFn } from "./Button";
 import { ClipEditor } from "./ClipEditor";
-import { ClipPreview } from "./ClipPreview";
+import { ClipPreview, useLastValidRange } from "./ClipPreview";
 import type { DownloadState, LocalDownloads } from "./useClipDownloads";
 
 /** A moment's range after the user's adjustments (seconds). */
@@ -79,6 +79,12 @@ export function MomentCard({
   // Next keeps a page mounted (hidden) after navigating away; stop the player so it doesn't keep playing.
   useLayoutEffect(() => () => setPreviewing(false), []);
   const [editing, setEditing] = useState(false);
+  // While a time is half-typed in the editor, the preview keeps the last valid range.
+  const draftValid =
+    parseTimestamp(draft.start) !== null &&
+    parseTimestamp(draft.end) !== null &&
+    !checkRange(draft.start, draft.end, videoDuration);
+  const previewRange = useLastValidRange(draftValid ? range : null, range);
   const ts = formatTimestamp(range.start);
   const url = buildTimestampUrl(videoId, range.start);
   const k = (s: string) => `${m.rank}:${s}`;
@@ -187,7 +193,7 @@ export function MomentCard({
         </button>
       </div>
 
-      {previewing && <ClipPreview videoId={videoId} start={range.start} end={range.end} />}
+      {previewing && <ClipPreview videoId={videoId} start={previewRange.start} end={previewRange.end} />}
 
       {(editing || download) && (
         <ClipEditor

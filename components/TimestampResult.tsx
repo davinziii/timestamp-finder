@@ -8,7 +8,7 @@ import { buildTimestampUrl } from "@/lib/youtube";
 import type { Match, SentenceResult } from "@/types/search";
 import { buttonClass, CheckIcon, CopyButton, PlayIcon, type CopyFn } from "./Button";
 import { ClipEditor, type QualityControl } from "./ClipEditor";
-import { ClipPreview } from "./ClipPreview";
+import { ClipPreview, useLastValidRange } from "./ClipPreview";
 import type { DownloadState, LocalDownloads } from "./useClipDownloads";
 
 export function TimestampResult({
@@ -50,6 +50,18 @@ export function TimestampResult({
   const [previewing, setPreviewing] = useState(false);
   // Next keeps a page mounted (hidden) after navigating away; stop the player so it doesn't keep playing.
   useLayoutEffect(() => () => setPreviewing(false), []);
+
+  // Preview the clip as edited below; while a time is half-typed, keep the last valid range.
+  const chosen = result.best ? ([result.best, ...result.alternatives][selected] ?? result.best) : null;
+  const ds = draft ? parseTimestamp(draft.start) : null;
+  const de = draft ? parseTimestamp(draft.end) : null;
+  const edited =
+    draft && ds !== null && de !== null && !checkRange(draft.start, draft.end, videoDuration) ? { start: ds, end: de } : null;
+  const matchStart = Math.floor(chosen?.start ?? 0);
+  const preview = useLastValidRange(edited, {
+    start: matchStart,
+    end: Math.min(matchStart + DEFAULT_CLIP_SECONDS, videoDuration || Infinity),
+  });
 
   if (!result.found || !result.best) {
     const weak = result.best && result.best.score >= 0.4 ? result.best : null;
@@ -93,13 +105,6 @@ export function TimestampResult({
   const ts = formatTimestamp(match.start);
   const url = buildTimestampUrl(videoId, match.start);
   const k = (s: string) => `${result.index}:${s}`;
-  // Preview the clip as edited below when its range is valid, else the default minute from the match.
-  const ds = draft ? parseTimestamp(draft.start) : null;
-  const de = draft ? parseTimestamp(draft.end) : null;
-  const preview =
-    draft && ds !== null && de !== null && !checkRange(draft.start, draft.end, videoDuration)
-      ? { start: ds, end: de }
-      : { start: Math.floor(match.start), end: Math.min(Math.floor(match.start) + DEFAULT_CLIP_SECONDS, videoDuration || Infinity) };
 
   return (
     <article className="animate-rise rounded-xl border border-line bg-surface p-4 sm:p-5">
