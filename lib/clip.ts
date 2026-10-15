@@ -89,10 +89,13 @@ export interface ClipSpec {
   end: number; // seconds
   name: string;
   quality: ClipQuality;
+  /** Download the whole video as-is (start/end ignored, no re-encode). */
+  full?: boolean;
 }
 
 export function validateClip(spec: ClipSpec): string | null {
   if (!/^[A-Za-z0-9_-]{11}$/.test(spec.videoId)) return "Invalid video.";
+  if (spec.full) return null;
   if (!Number.isFinite(spec.start) || !Number.isFinite(spec.end) || spec.start < 0) return "Invalid clip range.";
   if (spec.end <= spec.start) return "The clip end must be after the start.";
   if (spec.end - spec.start > CLIP_LIMITS.maxDurationSeconds) {
@@ -103,8 +106,13 @@ export function validateClip(spec: ClipSpec): string | null {
 
 /** yt-dlp arguments (without the output location). */
 export function ytDlpArgs(spec: ClipSpec, encoder: VideoEncoder = "libx264"): string[] {
-  const section = `*${formatTimestamp(spec.start)}-${formatTimestamp(Math.ceil(spec.end))}`;
   const res = spec.quality === "1080" ? "res:1080" : "res";
+  if (spec.full) {
+    // The whole video needs no cut, so YouTube's streams are kept as they are
+    // (no re-encode): fast, and the original quality.
+    return ["--no-playlist", "-S", `${res},proto:m3u8,vcodec:h264,acodec:m4a,ext:mp4`, "--remux-video", "mp4"];
+  }
+  const section = `*${formatTimestamp(spec.start)}-${formatTimestamp(Math.ceil(spec.end))}`;
   return [
     "--no-playlist",
     "--download-sections",

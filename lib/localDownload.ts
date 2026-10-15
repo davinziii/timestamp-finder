@@ -134,7 +134,8 @@ export async function downloadClip(
   try {
     mkdirSync(dir, { recursive: true });
     const base = uniqueBaseName(dir, sanitizeClipName(spec.name));
-    const duration = spec.end - spec.start;
+    // Full downloads report yt-dlp's own percentage instead of ffmpeg's encode time.
+    const duration = spec.full ? 0 : spec.end - spec.start;
     const encoder = await videoEncoder();
 
     const run = (extra: string[]) =>
@@ -159,7 +160,7 @@ export async function downloadClip(
         signal,
       );
 
-    onEvent({ type: "status", message: "Finding the best quality stream…" });
+    onEvent({ type: "status", message: spec.full ? "Finding the best quality streams…" : "Finding the best quality stream…" });
     let result = await run([]);
 
     // YouTube sometimes refuses a stream URL (HTTP 403), usually a direct HTTPS
@@ -201,6 +202,7 @@ function runYtDlp(
     let finalPath: string | null = null;
     let lastPercent = -1;
     let stderrTail = "";
+    let streams = 0;
 
     // stdin closed so ffmpeg never waits on keyboard input; detached on POSIX
     // so the whole process group can be killed on cancel.
@@ -218,7 +220,20 @@ function runYtDlp(
         return;
       }
       if (line.includes("Downloading 1 time ranges") || line.startsWith("[download] Destination")) {
-        onEvent({ type: "status", message: "Downloading clip…" });
+        streams++;
+        onEvent({
+          type: "status",
+          message: duration > 0 ? "Downloading clip…" : streams > 1 ? `Downloading stream ${streams}…` : "Downloading video…",
+        });
+      }
+      // Whole-video downloads (no ffmpeg cut): yt-dlp's own progress, per stream.
+      const dl = duration > 0 ? null : line.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
+      if (dl) {
+        const pct = Math.min(99, Math.floor(Number(dl[1])));
+        if (pct !== lastPercent) {
+          lastPercent = pct;
+          onEvent({ type: "progress", percent: pct });
+        }
       }
       // ffmpeg reports how much of the clip it has written: time=00:00:12.34
       const m = line.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);

@@ -352,7 +352,7 @@ function ClipPanel({
 }
 
 /** 60 -> "1:00", 45 -> "45s" */
-function clipLength(seconds: number): string {
+export function clipLength(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
@@ -367,7 +367,7 @@ function encodeEstimate(seconds: number, quality: ClipQuality): string {
   return `${Math.round(total / 60)} min`;
 }
 
-function DownloadStatus({ state }: { state: DownloadState }) {
+export function DownloadStatus({ state }: { state: DownloadState }) {
   if (state.status === "queued") {
     return <p className="mt-3 text-xs text-faint">Waiting in queue…</p>;
   }
@@ -416,7 +416,7 @@ function DownloadStatus({ state }: { state: DownloadState }) {
   );
 }
 
-function TimeField({
+export function TimeField({
   label,
   value,
   onChange,

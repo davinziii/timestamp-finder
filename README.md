@@ -1,6 +1,9 @@
-# Timestamp Finder
+# ClipFinder
 
-Paste a long YouTube video and the lines you're looking for, and get a timestamp for every one. It's built for clippers working with 1–3 hour videos.
+Find the best moments, locate exact timestamps, and prepare clips from YouTube videos. Built for clippers working with 1–3 hour videos. Two tools:
+
+- **Timestamp Finder** (`/`): paste a video and the lines you're looking for, and get a timestamp for every one.
+- **Best Moments** (`/best-moments`): paste a video, pick a moment type, and get a ranked list of moments worth clipping.
 
 ```bash
 npm install
@@ -8,6 +11,21 @@ npm run dev        # http://localhost:3000
 ```
 
 There are no API keys, database, accounts, or AI services. See `.env.example`.
+
+## Best Moments
+
+`POST /api/moments {url, type, count}` streams NDJSON like the search route. There is no AI model: moments are scored from what can be read reliably, and every source reports whether it was used, empty, or unavailable.
+
+| Source | How | Used for |
+| --- | --- | --- |
+| Transcript (required) | the same Innertube captions as the Timestamp Finder (`getTranscript`) | cue phrases per category, pauses (clip boundaries), captioned `[Laughter]`/`[Applause]`, speaker changes, hooks |
+| Title & description | the player response | topic relevance, fallback chapters |
+| Chapters | watch-page data (`/youtubei/v1/next`), else description timestamps | topic labels, penalty for clips that cross a chapter, skipping sponsor chapters |
+| Top comments | first 3 pages (~60) of top comments, same endpoint | `12:40 😂`-style timestamps and quoted lines, weighted by likes; a supporting signal only |
+| Most replayed | the heatmap in the watch-page data | a supporting signal; the intro is ignored |
+| Video/audio | not analyzed | visual-only moments can be missed (the UI says so) |
+
+Pipeline (`lib/moments/`): words → utterance units split at pauses → a candidate window for every natural start, ending at a pause within the type's length range → per-category scores (`lexicon.ts`) plus viewer signals and boundary quality → windows without enough evidence are dropped → greedy non-overlapping pick (All Types also spreads across categories). Fewer moments than requested are returned rather than padding with weak ones. Titles are keyword summaries (tf-idf against the whole video), never presented as quotes. `scoreText()` in `lexicon.ts` is the piece to replace with an AI model later. Results link to the video at the start second, copy in bulk, download with the same yt-dlp workflow, and open in the Timestamp Finder (`/?url=&q=&start=&end=`).
 
 ## How it works
 
@@ -29,7 +47,7 @@ sentences  ─▶ candidate regions via inverted index ─▶ fuzzy word alignme
 
 ## Clip downloads
 
-Every result has a **clip name**, an adjustable **start/end**, and two ways to get the clip:
+The **Download or trim this video** panel under the search form takes any start/end (validated: end after start, inside the video, at most 15 minutes) and downloads only that range, or downloads the **full video** as-is (no re-encode, no length limit). Every result has a **clip name**, an adjustable **start/end**, and two ways to get the clip:
 
 - **Copy download command** (and **Copy all download commands**): a `yt-dlp` command that works in PowerShell, cmd and bash. It downloads only that time range and saves it to `~/Videos/clips/<name>.mp4`. This works anywhere, including on a deployed site.
 - **Download clip** (and **Download all clips**): when the app runs on your computer with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and ffmpeg installed, it runs yt-dlp for you, shows real progress, and saves to `~/Videos/clips`. Existing files are never overwritten (`name (2).mp4`), and Cancel stops yt-dlp and ffmpeg and removes the partial file.
@@ -49,6 +67,7 @@ Local downloads are only on in `npm run dev` or with `ENABLE_LOCAL_DOWNLOADS=tru
 npm test                                   # offline: spec examples, URL parsing, sentence splitting, timestamps
 npm run test:accuracy -- L_Guz73e6fw 25    # real video: creator captions as the "script", searched in ASR, vs true time
 npm run test:robustness -- L_Guz73e6fw     # perturbed lines (dropped/extra/synonym/typo words) and decoys
+npm run test:moments -- L_Guz73e6fw 10 -v  # Best Moments for every type on a real video, with invariant checks
 ```
 
 ## Known limitations

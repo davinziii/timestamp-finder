@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { validateSentences } from "@/lib/sentences";
 import { extractVideoId } from "@/lib/youtube";
 import type { ErrorCode, SearchEvent, SearchSummary, SentenceResult } from "@/types/search";
@@ -8,9 +9,10 @@ import type { TranscriptSource, VideoInfo as Video } from "@/types/transcript";
 import { ProcessingStatus, type StatusLine } from "./ProcessingStatus";
 import { SearchForm } from "./SearchForm";
 import { SearchResults } from "./SearchResults";
+import { TrimPanel, type TrimRange } from "./TrimPanel";
 import { VideoInfo } from "./VideoInfo";
 
-interface SearchError {
+export interface SearchError {
   code: ErrorCode;
   message: string;
   detail?: string;
@@ -40,18 +42,31 @@ export function TimestampFinder() {
   const [video, setVideo] = useState<{ video: Video; source: TranscriptSource } | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [error, setError] = useState<SearchError | null>(null);
+  const [trimRange, setTrimRange] = useState<TrimRange>({ start: "", end: "" });
+  const [trimOpen, setTrimOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
 
-  async function run() {
+  /** Arriving from Best Moments: fill in the video, phrase and clip range, then search. */
+  function prefill(p: Prefill) {
+    setUrl(p.url);
+    if (p.q) setSentences(p.q);
+    if (p.start || p.end) {
+      setTrimRange({ start: p.start, end: p.end });
+      setTrimOpen(true);
+    }
+    if (p.q) run({ url: p.url, sentences: p.q });
+  }
+
+  async function run(input: { url: string; sentences: string } = { url, sentences }) {
     if (busy) return;
-    const videoId = extractVideoId(url);
+    const videoId = extractVideoId(input.url);
     if (!videoId) {
-      setUrlError(url.trim() ? "Please enter a valid YouTube URL." : "Paste a YouTube video URL.");
+      setUrlError(input.url.trim() ? "Please enter a valid YouTube URL." : "Paste a YouTube video URL.");
       return;
     }
     setUrlError(null);
-    const check = validateSentences(sentences);
+    const check = validateSentences(input.sentences);
     if (!check.ok) {
       setError({ code: "INVALID_INPUT", message: check.message });
       setOutcome(null);
@@ -73,7 +88,7 @@ export function TimestampFinder() {
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url, sentences }),
+        body: JSON.stringify({ url: input.url, sentences: input.sentences }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
@@ -136,10 +151,23 @@ export function TimestampFinder() {
           if (urlError) setUrlError(null);
         }}
         onSentencesChange={setSentences}
-        onSubmit={run}
+        onSubmit={() => run()}
         busy={busy}
         urlError={urlError}
       />
+
+      <TrimPanel
+        url={url}
+        video={video ? { ...video.video, maxHeight: video.video.maxHeight ?? 0 } : null}
+        range={trimRange}
+        onRangeChange={setTrimRange}
+        open={trimOpen}
+        onOpenChange={setTrimOpen}
+      />
+
+      <Suspense fallback={null}>
+        <QueryPrefill onPrefill={prefill} />
+      </Suspense>
 
       <div ref={resultsRef} className="scroll-mt-6 space-y-6">
         {(status.length > 0 || video) && (
@@ -166,7 +194,33 @@ export function TimestampFinder() {
   );
 }
 
-function ErrorPanel({ error }: { error: SearchError }) {
+interface Prefill {
+  url: string;
+  q: string;
+  start: string;
+  end: string;
+}
+
+/** Reads ?url=&q=&start=&end= once (links from Best Moments), then clears them from the address bar. */
+function QueryPrefill({ onPrefill }: { onPrefill: (p: Prefill) => void }) {
+  const params = useSearchParams();
+  const done = useRef(false);
+  const latest = useRef(onPrefill);
+  useEffect(() => {
+    latest.current = onPrefill;
+  });
+  useEffect(() => {
+    if (done.current) return;
+    done.current = true;
+    const url = params.get("url");
+    if (!url) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    latest.current({ url, q: params.get("q") ?? "", start: params.get("start") ?? "", end: params.get("end") ?? "" });
+  }, [params]);
+  return null;
+}
+
+export function ErrorPanel({ error }: { error: SearchError }) {
   const title = ERROR_TITLES[error.code] ?? "Something went wrong";
   return (
     <div role="alert" className="animate-rise rounded-xl border border-bad/30 bg-bad-soft p-4 sm:p-5">

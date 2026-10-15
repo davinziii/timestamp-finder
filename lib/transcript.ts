@@ -73,7 +73,7 @@ interface CaptionTrack {
 
 interface PlayerResponse {
   playabilityStatus?: { status?: string; reason?: string };
-  videoDetails?: { title?: string; author?: string; lengthSeconds?: string };
+  videoDetails?: { title?: string; author?: string; lengthSeconds?: string; shortDescription?: string };
   captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: CaptionTrack[] } };
   streamingData?: { adaptiveFormats?: { width?: number; height?: number }[] };
 }
@@ -182,7 +182,9 @@ const innertubeProvider: TranscriptProvider = {
         maxHeight: maxResolution(player),
       };
       const source: TranscriptSource = track.kind === "asr" ? "youtube-asr" : "youtube-captions";
-      return buildTranscript(video, source, track.languageCode, events);
+      const transcript = buildTranscript(video, source, track.languageCode, events);
+      transcript.description = player.videoDetails?.shortDescription ?? "";
+      return transcript;
     }
 
     throw classifyFailure(attempts);

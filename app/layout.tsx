@@ -13,9 +13,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Timestamp Finder — find exact moments in long YouTube videos",
-  description:
-    "Paste a YouTube URL and the lines you're looking for. Get a timestamp for every one — built for clippers working with long-form video.",
+  title: {
+    template: "%s · ClipFinder",
+    default: "ClipFinder — find the best moments and exact timestamps in YouTube videos",
+  },
+  description: "Find the best moments, locate exact timestamps, and prepare clips from YouTube videos.",
+  applicationName: "ClipFinder",
 };
 
 export const viewport: Viewport = {

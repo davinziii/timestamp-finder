@@ -5,6 +5,8 @@ import { parseSentences, validateSentences } from "../lib/sentences";
 import { extractVideoId, buildTimestampUrl } from "../lib/youtube";
 import { formatTimestamp, parseTimestamp } from "../lib/timestamp";
 import { sanitizeClipName, defaultClipName, ytDlpCommand, validateClip } from "../lib/clip";
+import { findMoments } from "../lib/moments/analyze";
+import { chaptersFromDescription, parseCount, type Signals } from "../lib/moments/signals";
 import type { Transcript } from "../types/transcript";
 
 function fakeTranscript(cues: [number, string][]): Transcript {
@@ -83,4 +85,55 @@ assert.equal(
 assert.ok(ytDlpCommand({ videoId: "fjox2hapu98", start: 1, end: 5, name: "x", quality: "best" }).includes(" -S res,proto:m3u8"));
 assert.equal(validateClip({ videoId: "fjox2hapu98", start: 10, end: 5, name: "x", quality: "1080" }) !== null, true);
 assert.equal(validateClip({ videoId: "fjox2hapu98", start: 0, end: 16 * 60, name: "x", quality: "1080" }) !== null, true);
+
+// Full-video downloads: no section cut, no re-encode, no length limit.
+const fullCmd = ytDlpCommand({ videoId: "fjox2hapu98", start: 0, end: 0, name: "Whole video", quality: "1080", full: true });
+assert.ok(!fullCmd.includes("--download-sections") && !fullCmd.includes("--downloader-args"), fullCmd);
+assert.ok(fullCmd.includes("--remux-video mp4") && fullCmd.includes("res:1080"), fullCmd);
+assert.equal(validateClip({ videoId: "fjox2hapu98", start: 0, end: 0, name: "x", quality: "1080", full: true }), null);
+assert.notEqual(validateClip({ videoId: "bad", start: 0, end: 0, name: "x", quality: "1080", full: true }), null);
+
+// Best Moments helpers
+assert.equal(parseCount("1.2K"), 1200);
+assert.equal(parseCount("3"), 3);
+assert.equal(parseCount(""), 0);
+const ch = chaptersFromDescription("Intro text\n0:00 Intro\n4:36 - GPT-4\n1:09:05 Fear\nnot a chapter", 9000);
+assert.ok(ch.state === "ok" && ch.value.length === 3 && ch.value[2].start === 4145 && ch.value[1].title === "GPT-4");
+assert.equal(chaptersFromDescription("no chapters here", 100).state, "empty");
+
+// Best Moments: neutral talk yields nothing; real cues are found at the right time, per category.
+function momentTranscript(extra: [number, string][]): Transcript {
+  const cues: [number, string][] = Array.from({ length: 360 }, (_, i) => [i * 5, `we were talking about the market and the weather number ${i} today.`]);
+  for (const [t, text] of extra) cues[t / 5] = [t, text];
+  const base = fakeTranscript(cues);
+  base.video.durationSeconds = 1800;
+  base.segments = cues.map(([start, text]) => ({ start, duration: 5, text }));
+  return base;
+}
+const noSignals: Signals = {
+  chapters: { state: "empty", reason: "none" },
+  heatmap: { state: "unavailable", reason: "test" },
+  comments: { state: "unavailable", reason: "test" },
+};
+const neutral = momentTranscript([]);
+for (const type of ["funny", "informative", "emotional", "controversial", "surprising"] as const) {
+  assert.equal(findMoments({ transcript: neutral, signals: noSignals, type, count: 10 }).moments.length, 0, type);
+}
+const rich = momentTranscript([
+  [600, "and then he slipped on the stage I was joking but it was hilarious. [Laughter]"],
+  [605, "honestly the funniest thing I have ever seen haha. [Laughter]"],
+  [1200, "here is my advice the key is to start with one habit."],
+  [1205, "the biggest mistake is doing too much for example ten habits at once."],
+]);
+const funny = findMoments({ transcript: rich, signals: noSignals, type: "funny", count: 10 }).moments;
+assert.equal(funny.length, 1);
+assert.ok(funny[0].start <= 600 && funny[0].end >= 608 && funny[0].category === "funny", JSON.stringify(funny[0]));
+assert.ok(funny[0].signals.includes("Laughter in captions"));
+assert.ok(funny[0].excerpt.includes("funniest thing"));
+const info = findMoments({ transcript: rich, signals: noSignals, type: "informative", count: 10 }).moments;
+assert.equal(info.length, 1);
+assert.ok(info[0].start <= 1200 && info[0].end >= 1208, JSON.stringify(info[0]));
+const all = findMoments({ transcript: rich, signals: noSignals, type: "all", count: 5 }).moments;
+assert.deepEqual(new Set(all.map((m) => m.category)), new Set(["funny", "informative"]));
+
 console.log("all unit checks passed");

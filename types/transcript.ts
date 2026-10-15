@@ -32,4 +32,6 @@ export interface Transcript {
   wordTimings: boolean;
   segments: TranscriptSegment[];
   words: TranscriptWord[];
+  /** The video description, when the source provides it. Used as context by Best Moments. */
+  description?: string;
 }

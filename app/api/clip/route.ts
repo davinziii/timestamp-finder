@@ -11,7 +11,7 @@ import {
 
 /*
  * GET  /api/clip  -> whether local downloads are available on this machine
- * POST /api/clip  { videoId, start, end, name, quality } -> NDJSON DownloadEvents
+ * POST /api/clip  { videoId, start, end, name, quality, full? } -> NDJSON DownloadEvents
  *
  * Local-only: see lib/localDownload.ts.
  */
@@ -52,6 +52,7 @@ export async function POST(request: Request) {
     end: Number(body.end),
     name: String(body.name ?? ""),
     quality: (body.quality === "best" ? "best" : "1080") satisfies ClipQuality,
+    full: body.full === true,
   };
   const invalid = validateClip(spec);
   if (invalid) return unavailable(invalid, 400);
