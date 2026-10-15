@@ -1,12 +1,14 @@
 "use client";
 
-import type { ClipDraft, ClipQuality, ClipSpec } from "@/lib/clip";
+import { useLayoutEffect, useState } from "react";
+import { checkRange, DEFAULT_CLIP_SECONDS, type ClipDraft, type ClipQuality, type ClipSpec } from "@/lib/clip";
 import { MATCHING } from "@/lib/config";
-import { formatTimestamp } from "@/lib/timestamp";
+import { formatTimestamp, parseTimestamp } from "@/lib/timestamp";
 import { buildTimestampUrl } from "@/lib/youtube";
 import type { Match, SentenceResult } from "@/types/search";
 import { buttonClass, CheckIcon, CopyButton, PlayIcon, type CopyFn } from "./Button";
 import { ClipEditor, type QualityControl } from "./ClipEditor";
+import { ClipPreview } from "./ClipPreview";
 import type { DownloadState, LocalDownloads } from "./useClipDownloads";
 
 export function TimestampResult({
@@ -45,6 +47,9 @@ export function TimestampResult({
   copy: CopyFn;
 }) {
   const n = result.index + 1;
+  const [previewing, setPreviewing] = useState(false);
+  // Next keeps a page mounted (hidden) after navigating away; stop the player so it doesn't keep playing.
+  useLayoutEffect(() => () => setPreviewing(false), []);
 
   if (!result.found || !result.best) {
     const weak = result.best && result.best.score >= 0.4 ? result.best : null;
@@ -65,8 +70,19 @@ export function TimestampResult({
             >
               {formatTimestamp(weak.start)}
             </a>{" "}
-            ({Math.round(weak.score * 100)}%) — &ldquo;{weak.text}&rdquo;
+            ({Math.round(weak.score * 100)}%) — &ldquo;{weak.text}&rdquo;{" "}
+            <button
+              type="button"
+              onClick={() => setPreviewing((p) => !p)}
+              aria-pressed={previewing}
+              className="text-muted underline decoration-line-strong underline-offset-2 hover:text-fg"
+            >
+              {previewing ? "Hide preview" : "Preview"}
+            </button>
           </p>
+        )}
+        {weak && previewing && (
+          <ClipPreview videoId={videoId} start={weak.start} end={Math.min(weak.start + 30, videoDuration || Infinity)} />
         )}
       </article>
     );
@@ -77,6 +93,13 @@ export function TimestampResult({
   const ts = formatTimestamp(match.start);
   const url = buildTimestampUrl(videoId, match.start);
   const k = (s: string) => `${result.index}:${s}`;
+  // Preview the clip as edited below when its range is valid, else the default minute from the match.
+  const ds = draft ? parseTimestamp(draft.start) : null;
+  const de = draft ? parseTimestamp(draft.end) : null;
+  const preview =
+    draft && ds !== null && de !== null && !checkRange(draft.start, draft.end, videoDuration)
+      ? { start: ds, end: de }
+      : { start: Math.floor(match.start), end: Math.min(Math.floor(match.start) + DEFAULT_CLIP_SECONDS, videoDuration || Infinity) };
 
   return (
     <article className="animate-rise rounded-xl border border-line bg-surface p-4 sm:p-5">
@@ -100,12 +123,22 @@ export function TimestampResult({
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <a href={url} target="_blank" rel="noopener noreferrer" className={buttonClass("primary", "sm")}>
-          <PlayIcon /> Watch at {ts}
+        <button
+          type="button"
+          onClick={() => setPreviewing((p) => !p)}
+          aria-pressed={previewing}
+          className={buttonClass("primary", "sm")}
+        >
+          <PlayIcon /> {previewing ? "Hide preview" : "Preview clip"}
+        </button>
+        <a href={url} target="_blank" rel="noopener noreferrer" className={buttonClass("secondary", "sm")}>
+          Watch at {ts}
         </a>
         <CopyButton label="Copy timestamp" copyKey={k("ts")} text={ts} copied={copied} copy={copy} />
         <CopyButton label="Copy YouTube link" copyKey={k("url")} text={url} copied={copied} copy={copy} />
       </div>
+
+      {previewing && <ClipPreview videoId={videoId} start={preview.start} end={preview.end} />}
 
       {result.alternatives.length > 0 && (
         <div className="mt-4 border-t border-line pt-3">
@@ -135,6 +168,7 @@ export function TimestampResult({
           copyKey={k}
           copied={copied}
           copy={copy}
+          showPreview={false}
         />
       )}
     </article>
