@@ -25,12 +25,12 @@ export const CUES: Record<CueCategory, Lexicon> = {
   },
   informative: {
     "the key is": 1.5, "the key thing": 1.5, "the most important": 1.3, "the reason why": 1, "the reason is": 1.2,
-    "heres how": 1.3, "how to": 0.8, "step one": 1.2, "first step": 1.2, "the first thing": 0.9, "you should": 0.7,
+    "heres how": 1.3, "how to": 0.5, "step one": 1.2, "first step": 1.2, "the first thing": 0.9, "you should": 0.7,
     "you need to": 0.7, "make sure": 0.7, "the trick is": 1.3, tip: 0.9, tips: 0.9, advice: 1, "my advice": 1.3,
     lesson: 1, lessons: 1, "the lesson": 1.2, "biggest mistake": 1.5, mistake: 0.6, mistakes: 0.7,
     "most people dont": 1, "what happens is": 0.9, "the way it works": 1.2, "in other words": 0.9,
     "for example": 0.9, "for instance": 0.9, "which means": 0.7, "that means": 0.6, research: 0.7, study: 0.6,
-    studies: 0.8, "studies show": 1.3, data: 0.5, percent: 0.6, statistic: 0.9, statistics: 0.9,
+    studies: 0.8, "studies show": 1.3, data: 0.3, percent: 0.6, statistic: 0.9, statistics: 0.9,
     "the difference between": 1, framework: 0.9, strategy: 0.7, principle: 0.9, "rule of thumb": 1.3,
     "let me explain": 1.2, explain: 0.5, "the problem is": 0.8, "the solution": 1, "the answer is": 1,
     "the best way": 1.1, "if you want to": 0.7, "focus on": 0.7, "start with": 0.6, "the goal is": 0.9,
@@ -55,7 +55,7 @@ export const CUES: Record<CueCategory, Lexicon> = {
     funeral: 1.5, cancer: 1, hospital: 0.8, cried: 1.5, crying: 1.4, tears: 1.4, "broke down": 1.3,
     depressed: 1.3, depression: 1.3, anxiety: 0.9, suicide: 1.5, lonely: 1.2, scared: 0.9, afraid: 0.7,
     "the hardest": 1.2, hardest: 0.9, struggle: 0.8, struggled: 0.9, struggling: 0.9, "lost everything": 1.6,
-    homeless: 1.3, "rock bottom": 1.6, proud: 1, grateful: 1.1, thankful: 0.9, "means a lot": 1.2,
+    homeless: 1.3, "rock bottom": 1.6, proud: 0.8, grateful: 1.1, thankful: 0.9, "means a lot": 1.2,
     "means everything": 1.3, "changed my life": 1.5, "never forget": 1.2, "gave up": 0.9, "almost quit": 1.3,
     trauma: 1.3, healing: 1, forgive: 1.1, forgiveness: 1.2, regret: 1, "i miss": 1, emotional: 1,
     inspired: 0.8, inspiring: 0.9, heartbroken: 1.6, heartbreaking: 1.5, vulnerable: 1.1, "love you": 0.9,
@@ -90,7 +90,7 @@ export const AD_CUES: Lexicon = {
   "hit the like": 1.5, patreon: 1.2, merch: 1, "free trial": 1.5, "first month free": 2, "check out": 0.4,
   squarespace: 2, betterhelp: 2, nordvpn: 2, expressvpn: 2, "athletic greens": 2, ag1: 2, audible: 1.5,
   skillshare: 2, manscaped: 2, hellofresh: 2, "raid shadow legends": 2, netsuite: 2, simplisafe: 2,
-  shopify: 1.2, "go to": 0.3, "dot com slash": 2, "com slash": 2,
+  shopify: 1.2, "wherever you get your podcasts": 2, "where you get your podcasts": 2, "new episodes": 1, "rate and review": 2, "go to": 0.3, "dot com slash": 2, "com slash": 2,
 };
 
 /** First words that usually mean the line depends on what came before. */
@@ -189,3 +189,48 @@ export function scoreText(normalized: string, lexicon: Lexicon): CueHits {
   }
   return { score, phrases };
 }
+
+/*
+ * Sentence-boundary cues. Auto-captions have no punctuation, and people pause
+ * mid-sentence all the time, so a pause alone isn't a sentence end. These
+ * word lists catch the cuts that are obviously mid-thought.
+ */
+
+/** Words a sentence almost never ends on ("the luxury item of", "I appreciate my"). Weight = how sure. */
+export const DANGLING_END: Record<string, number> = {
+  a: 1, an: 1, the: 1, of: 1, to: 0.9, in: 0.7, on: 0.6, at: 0.8, for: 0.8, with: 0.9, from: 0.9, by: 0.8,
+  into: 1, about: 0.6, than: 1, as: 0.8, and: 1, or: 1, but: 1, because: 1, cuz: 1, cause: 0.8, if: 1,
+  when: 0.7, while: 0.8, which: 0.9, who: 0.6, whose: 1, my: 1, your: 1, his: 0.8, her: 0.5, our: 1, their: 1,
+  its: 1, this: 0.5, these: 0.8, those: 0.6, is: 0.8, are: 0.8, was: 0.8, were: 0.8, be: 0.6, been: 0.8,
+  am: 0.8, im: 1, youre: 1, theyre: 1, hes: 1, shes: 1, thats: 0.9, theres: 0.9,
+  whats: 1, i: 1, we: 0.9, they: 0.8, he: 0.8, she: 0.8, have: 0.5, has: 0.6, had: 0.6, do: 0.4, does: 0.6,
+  did: 0.4, can: 0.6, could: 0.6, would: 0.6, should: 0.6, will: 0.6, wont: 0.4, dont: 0.7, didnt: 0.6, whos: 1, hows: 0.8, wheres: 0.8, ill: 0.8, youll: 0.9, theyll: 0.9, youd: 0.9, theyd: 0.9,
+  gonna: 1, wanna: 0.9, gotta: 0.9, just: 0.6, really: 0.4, very: 1, more: 0.3, most: 0.6, some: 0.5,
+  any: 0.5, every: 1, no: 0.2, not: 0.6, um: 0.8, uh: 0.8, like: 0.6, so: 0.4, then: 0.3, also: 0.4,
+  even: 0.6, how: 0.5, what: 0.4, where: 0.4, why: 0.4, said: 0.4, says: 0.5, think: 0.4, know: 0.2,
+  mean: 0.4, feel: 0.6, want: 0.8, need: 0.7, try: 0.6, make: 0.5, give: 0.6, put: 0.7, actually: 0.5, it: 0.25, being: 0.8, getting: 0.6, going: 0.6, trying: 0.8, kind: 0.8, sort: 0.8, lot: 0.6,
+};
+
+/** First words that continue the previous thought ("…you for being…", "…because…"). Weight = how sure. */
+export const CONTINUATION_START: Record<string, number> = {
+  because: 1, cuz: 1, cause: 0.8, than: 1, of: 1, to: 0.8, which: 0.9, whose: 1, whom: 1, for: 0.6,
+  with: 0.6, from: 0.7, into: 0.9, about: 0.5, as: 0.5, or: 0.7, nor: 1, and: 0.4, but: 0.3, that: 0.4,
+  is: 0.6, are: 0.6, was: 0.6, were: 0.6, too: 0.8, either: 1, though: 0.6, anyway: 0.3, s: 1, t: 1,
+};
+
+/** Openers that set up a story, an answer or a point: a clip should start here, not after. */
+export const SETUP_OPENERS: Record<string, number> = {
+  "can i tell you": 1.2, "let me tell you": 1.2, "ill tell you": 1, "i tell you what": 1, "let me ask you": 1,
+  "heres the thing": 1.2, "heres what": 0.8, "the funniest": 0.9, "the craziest": 0.9, "the best": 0.4,
+  "the worst": 0.6, "i remember": 1, "one time": 1, "true story": 1.2, "so i was": 0.8, "so one day": 1,
+  "listen": 0.5, "look": 0.3, "what youre saying is": 1, "do you think": 0.9, "have you ever": 1,
+  "what do you think": 1, "how did you": 0.9, "why did you": 0.9, "what was it like": 1, "tell me about": 1,
+  "i want to ask": 1, "my question is": 1, "the thing about": 0.8, "the reason": 0.5, "the truth is": 0.7,
+};
+
+/** Show housekeeping that makes a weak opening ("thank you so much", "this was great"). */
+export const HOUSEKEEPING: Record<string, number> = {
+  "thank you so much": 1, "thanks for having me": 1.5, "thank you for having me": 1.5, "this was great": 1,
+  "welcome to": 0.8, "welcome back": 1, "thanks for coming": 1.2, "appreciate you": 0.6, "love you man": 0.5,
+  "before we get into": 1, "lets get into it": 1, "lets get started": 1, "see you next time": 1.5,
+};

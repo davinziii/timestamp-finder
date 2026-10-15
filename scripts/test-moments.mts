@@ -35,7 +35,7 @@ for (const { value, label } of MOMENT_TYPES) {
     );
     if (verbose) console.log(`    key: “${m.keyLine.slice(0, 140)}”\n    why: ${m.why}\n    pot: ${m.potentialReason}`);
     assert.ok(m.end > m.start && m.start >= 0, "valid range");
-    assert.ok(m.end - m.start <= 125, "range within the category's limit");
+    assert.ok(m.end - m.start <= 155, "range within the category's limit");
     assert.ok(spoken.includes(m.excerpt.split(" ").slice(0, 6).join(" ")), "excerpt comes from the transcript");
   }
   const sorted = [...moments].sort((a, b) => a.start - b.start);

@@ -5,8 +5,12 @@ import {
   AD_CUES,
   COMMENT_HINTS,
   CONTEXT_DEPENDENT_STARTS,
+  CONTINUATION_START,
   CUES,
+  DANGLING_END,
   HOOKS,
+  HOUSEKEEPING,
+  SETUP_OPENERS,
   normalizeText,
   scoreText,
   STOPWORDS,
@@ -38,14 +42,37 @@ const MIN_VIEWER = 1.6;
 
 /** Seconds: [min, ideal, max] clip length per requested type. */
 const LENGTHS: Record<MomentType, [number, number, number]> = {
-  all: [20, 45, 90],
-  funny: [15, 35, 75],
-  informative: [30, 60, 120],
-  controversial: [25, 55, 100],
-  emotional: [30, 60, 120],
-  surprising: [15, 40, 75],
-  shorts: [15, 35, 58],
+  all: [25, 60, 120],
+  funny: [20, 45, 100],
+  informative: [30, 75, 150],
+  controversial: [25, 60, 120],
+  emotional: [30, 75, 150],
+  surprising: [20, 45, 100],
+  shorts: [15, 40, 60],
 };
+
+/** A clip may only start / end where the boundary score is at least this. */
+const START_MIN = 0.3;
+const END_MIN = 0.45;
+
+/** Setup openers by first word, to split units where a story or question begins even without a pause. */
+const OPENERS_BY_FIRST = (() => {
+  const m = new Map<string, string[][]>();
+  for (const phrase of Object.keys(SETUP_OPENERS)) {
+    const words = phrase.split(" ");
+    if (words.length < 2) continue; // single words ("listen") are too common to split on
+    m.set(words[0], [...(m.get(words[0]) ?? []), words]);
+  }
+  return m;
+})();
+
+/** Whether a setup opener ("can I tell you", "do you think") starts at word k. */
+function opensSetup(words: { text: string }[], k: number): boolean {
+  const first = normalizeText(words[k].text);
+  const candidates = OPENERS_BY_FIRST.get(first);
+  if (!candidates) return false;
+  return candidates.some((phrase) => phrase.every((p, n) => words[k + n] && normalizeText(words[k + n].text) === p));
+}
 
 // ---------------------------------------------------------------------------
 // 1. Units
@@ -57,8 +84,23 @@ interface Unit {
   tokens: string[];
   pauseBefore: number;
   pauseAfter: number;
+  /** When the last word actually stops (auto-captions stretch a word over the pause after it). */
+  spokenEnd: number;
   endsSentence: boolean;
+  /**
+   * How good a cut is just before / just after this unit: the pause, minus
+   * penalties for dangling words ("…item of") and continuations ("because…").
+   * Roughly 0 = mid-sentence, 1 = clear sentence end.
+   */
+  boundaryBefore: number;
+  boundaryAfter: number;
+  /** Opens a story, question or point ("can I tell you", "do you think"). */
+  setup: number;
+  /** Show housekeeping ("thank you so much", "welcome back"). */
+  housekeeping: number;
   cues: Record<CueCategory, number>;
+  /** Number of cue phrases per category (evidence count, not weight). */
+  cueCount: Record<CueCategory, number>;
   cuePhrases: Record<CueCategory, string[]>;
   hook: number;
   hookPhrases: string[];
@@ -78,10 +120,43 @@ const QUESTION_START = /^(what|why|how|who|when|where|do you|did you|are you|is 
  * Pause after a word. Auto-captions stretch the word before a pause instead
  * of leaving a gap, so an unusually long word counts as a pause too.
  */
+/** A word's end without the pause auto-captions fold into it. */
+function spokenEndOf(w: { text: string; start: number; end: number }): number {
+  return Math.min(w.end, w.start + Math.min(0.9, 0.12 + 0.07 * w.text.length) + 0.1);
+}
+
 function pauseAfterWord(w: { text: string; start: number; end: number }, nextStart: number | undefined): number {
   const gap = nextStart === undefined ? 2 : Math.max(0, nextStart - w.end);
   const expected = Math.min(0.9, 0.12 + 0.07 * w.text.length);
   return gap + Math.max(0, w.end - w.start - expected);
+}
+
+/**
+ * Scores every cut between units. Captions without punctuation leave the
+ * pause as the main signal, so words that can't end or start a sentence
+ * veto a cut: "…the luxury item of | comfort" and "…your story | because"
+ * are mid-thought however long the pause.
+ */
+function scoreBoundaries(units: Unit[]) {
+  if (!units.length) return;
+  units[0].boundaryBefore = 1.2;
+  units[units.length - 1].boundaryAfter = 1.2;
+  for (let k = 1; k < units.length; k++) {
+    const prev = units[k - 1];
+    const next = units[k];
+    const last = prev.tokens[prev.tokens.length - 1] ?? "";
+    const first = next.tokens[0] ?? "";
+    const b =
+      Math.min(1.2, next.pauseBefore / 0.6) -
+      (DANGLING_END[last] ?? 0) -
+      (CONTINUATION_START[first] ?? 0) +
+      (prev.endsSentence ? 1 : 0) +
+      (next.turns > 0 ? 0.5 : 0) +
+      // "…thank you so much yo | can I just tell you the funniest thing": a new story starts here.
+      (next.setup > 0 && (DANGLING_END[last] ?? 0) < 0.6 ? 0.6 : 0);
+    next.boundaryBefore = b;
+    prev.boundaryAfter = b;
+  }
 }
 
 function buildUnits(t: Transcript): Unit[] {
@@ -103,23 +178,31 @@ function buildUnits(t: Transcript): Unit[] {
     const norm = normalizeText(text);
     const cues = {} as Record<CueCategory, number>;
     const cuePhrases = {} as Record<CueCategory, string[]>;
+    const cueCount = {} as Record<CueCategory, number>;
     for (const c of CATEGORIES) {
       const hit = scoreText(norm, CUES[c]);
       cues[c] = hit.score;
       cuePhrases[c] = hit.phrases;
+      cueCount[c] = hit.phrases.length;
     }
     const hook = scoreText(norm, HOOKS);
     const tokens = norm.split(" ").filter(Boolean);
     units.push({
       start: cur[0].start,
       end: cur[cur.length - 1].end,
+      spokenEnd: spokenEndOf(cur[cur.length - 1]),
       text,
       tokens,
       pauseBefore: curPauseBefore,
       pauseAfter,
       endsSentence: /[.?!]["')\]]?$/.test(cur[cur.length - 1].text),
+      boundaryBefore: 0,
+      boundaryAfter: 0,
+      setup: Math.min(1.5, scoreText(norm, SETUP_OPENERS).score),
+      housekeeping: scoreText(norm, HOUSEKEEPING).score,
       cues,
       cuePhrases,
+      cueCount,
       hook: hook.score,
       hookPhrases: hook.phrases,
       ad: scoreText(norm, AD_CUES).score,
@@ -146,11 +229,18 @@ function buildUnits(t: Transcript): Unit[] {
       const prev = cur[cur.length - 1];
       const pause = pauseAfterWord(prev, w.start);
       const sentenceEnd = /[.?!]["')\]]?$/.test(prev.text) && cur.length >= 3;
-      if (pause >= 0.55 || sentenceEnd || w.start - cur[0].start >= 10) flush(pause);
+      // Split at every noticeable pause, and where a story or question opens;
+      // whether it's a good place to cut is scored afterwards.
+      const opener = cur.length >= 3 && opensSetup(words, k);
+      if ((pause >= 0.3 && cur.length >= 3) || pause >= 0.55 || sentenceEnd || opener || w.start - cur[0].start >= 10) {
+        flush(pause);
+      }
     }
     cur.push({ ...w, text: w.text.replace(/^>+/, "") });
   }
   flush(2);
+
+  scoreBoundaries(units);
 
   // Attach captioned reactions to the unit being spoken when they appear
   // (a laugh follows the punchline, so the unit just before counts).
@@ -291,7 +381,7 @@ interface Context {
   totals: Totals;
 }
 
-type Summed = "ad" | "laughter" | "turns" | "numbers" | "applause" | CueCategory;
+type Summed = "ad" | "laughter" | "turns" | "numbers" | "applause" | CueCategory | `n:${CueCategory}`;
 
 /** Running totals over units, so any window's sum is one subtraction. */
 interface Totals {
@@ -299,9 +389,14 @@ interface Totals {
 }
 
 function runningTotals(units: Unit[]): Totals {
-  const keys: Summed[] = ["ad", "laughter", "turns", "numbers", "applause", ...CATEGORIES];
-  const value = (u: Unit, k: Summed) =>
-    k === "ad" || k === "laughter" || k === "turns" || k === "numbers" || k === "applause" ? u[k] : u.cues[k];
+  const keys: Summed[] = [
+    "ad", "laughter", "turns", "numbers", "applause", ...CATEGORIES, ...CATEGORIES.map((c) => `n:${c}` as const),
+  ];
+  const value = (u: Unit, k: Summed): number => {
+    if (k === "ad" || k === "laughter" || k === "turns" || k === "numbers" || k === "applause") return u[k];
+    if (k.startsWith("n:")) return u.cueCount[k.slice(2) as CueCategory];
+    return u.cues[k as CueCategory];
+  };
   const table = new Map<Summed, Float64Array>();
   for (const k of keys) {
     const t = new Float64Array(units.length + 1);
@@ -381,9 +476,20 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
   const commentWeight = mentions.reduce((n, m) => n + m.weight, 0);
   const viewer = 1.6 * replay + Math.min(2, 0.7 * commentWeight);
 
-  const startQuality = clamp01(units[i].pauseBefore / 0.8) - (i > 0 && !units[i - 1].endsSentence && units[i].pauseBefore < 0.3 ? 0.3 : 0);
-  const endQuality = clamp01(units[j].pauseAfter / 0.8) + (units[j].endsSentence ? 0.3 : 0);
+  const startQuality = clamp01(units[i].boundaryBefore);
+  const endQuality = clamp01(units[j].boundaryAfter);
   const contextPenalty = contextPenaltyOf(units[i]);
+  // Starting on the question or story opener keeps the setup in the clip;
+  // starting on "thanks for having me" doesn't. Ending on a question cuts the answer.
+  let setup = 0;
+  let housekeeping = 0;
+  for (let k = i; k <= j && units[k].start < start + 15; k++) {
+    if (units[k].start < start + 8) setup += units[k].setup;
+    housekeeping += units[k].housekeeping;
+  }
+  setup = Math.min(1.2, setup);
+  housekeeping = Math.min(1.5, housekeeping);
+  const endsOnQuestion = units[j].question && units[j].end - units[j].start < 6;
   const lengthFit = 1 - Math.min(1, Math.abs(dur - ideal) / ideal);
   // Hook: the first ~10 seconds.
   let openingHook = 0;
@@ -391,7 +497,11 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
   const hook = Math.min(2, openingHook) + (units[i].question ? 0.5 : 0);
 
   const boundary =
-    0.6 * startQuality + 0.4 * endQuality - 0.6 * contextPenalty - (crossesChapter ? 0.5 : 0) + 0.3 * lengthFit;
+    0.6 * startQuality + 0.5 * endQuality + 0.5 * setup - 0.8 * housekeeping - 0.6 * contextPenalty -
+    (endsOnQuestion ? 0.5 : 0) - (crossesChapter ? 0.5 : 0) + 0.3 * lengthFit;
+  // Separate pieces of evidence (cue phrases, laughter, comment reactions), so one repeated word isn't enough.
+  const evidence = (c: CueCategory) =>
+    sum(`n:${c}`) + (c === "funny" ? laughter : 0) + mentions.filter((m) => m.hints.includes(c)).length;
 
   let best: CueCategory = "informative";
   for (const c of CATEGORIES) if (cat[c] > cat[best]) best = c;
@@ -402,13 +512,13 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
   if (type === "shorts") {
     const content = Math.max(cat[best], viewer);
     if (content < 1.5) return null;
-    category = cat[best] >= MIN_EVIDENCE ? best : viewer >= MIN_VIEWER ? "popular" : best;
+    category = cat[best] >= MIN_EVIDENCE && evidence(best) >= 2 ? best : viewer >= MIN_VIEWER ? "popular" : best;
     strength = content;
     total =
-      0.6 * cat[best] + 1.2 * hook + 1.2 * startQuality + 0.8 * endQuality - 1.5 * contextPenalty + 0.6 * viewer +
-      0.8 * lengthFit - (crossesChapter ? 0.5 : 0);
+      0.6 * cat[best] + 1.2 * hook + 1.2 * startQuality + 0.8 * endQuality + 0.5 * setup - 0.8 * housekeeping -
+      1.5 * contextPenalty - (endsOnQuestion ? 0.5 : 0) + 0.6 * viewer + 0.8 * lengthFit - (crossesChapter ? 0.5 : 0);
   } else if (type === "all") {
-    if (cat[best] >= MIN_EVIDENCE) {
+    if (cat[best] >= MIN_EVIDENCE && evidence(best) >= 2) {
       category = best;
       strength = cat[best];
     } else if (viewer >= MIN_VIEWER) {
@@ -417,7 +527,7 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
     } else return null;
     total = strength + 0.6 * viewer + boundary;
   } else {
-    if (cat[type] < MIN_EVIDENCE) return null;
+    if (cat[type] < MIN_EVIDENCE || evidence(type) < 2) return null;
     category = type;
     strength = cat[type];
     total = strength + 0.5 * viewer + boundary;
@@ -436,14 +546,14 @@ function candidateWindows(ctx: Context): Window[] {
   const out: Window[] = [];
   for (let i = 0; i < units.length; i++) {
     // Only start where a thought plausibly starts.
-    if (i > 0 && units[i].pauseBefore < 0.25 && !units[i - 1].endsSentence) continue;
+    if (units[i].boundaryBefore < START_MIN) continue;
     let best: Window | null = null;
     for (let j = i; j < units.length; j++) {
       const dur = units[j].end - units[i].start;
       if (dur > maxLen) break;
       if (dur < minLen) continue;
       // Only end at a pause or sentence end (a complete thought).
-      if (units[j].pauseAfter < 0.35 && !units[j].endsSentence && j < units.length - 1) continue;
+      if (units[j].boundaryAfter < END_MIN) continue;
       const w = scoreWindow(ctx, i, j);
       if (w && (!best || w.total > best.total)) best = w;
     }
@@ -695,6 +805,33 @@ function transcriptNoteFor(span: Unit[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Clip times are whole seconds (YouTube links and the clip editor use them).
+ * Rounding naively pulls the neighbouring sentence's words into the clip, so
+ * pick the whole second that sits in the silence between sentences when there
+ * is one, and otherwise clip a fraction of our own word rather than include
+ * someone else's.
+ */
+function snapToSeconds(units: Unit[], i: number, j: number, duration: number): { start: number; end: number } {
+  const first = units[i].start;
+  const prevEnd = i > 0 ? units[i - 1].spokenEnd : 0;
+  let start = Math.floor(first);
+  if (start < prevEnd - 0.1) {
+    const after = Math.ceil(prevEnd);
+    start = after <= first + 0.3 ? after : Math.floor(first);
+  }
+
+  const last = units[j].spokenEnd;
+  const nextStart = j + 1 < units.length ? units[j + 1].start : Infinity;
+  let end = Math.ceil(last + 0.2);
+  if (end > nextStart + 0.1) {
+    const before = Math.floor(nextStart);
+    end = before >= last - 0.3 ? before : Math.ceil(last);
+  }
+  if (duration > 0) end = Math.min(end, Math.ceil(duration));
+  return { start: Math.max(0, start), end: Math.max(end, start + 1) };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 
@@ -754,9 +891,7 @@ export function findMoments(
     return {
       rank: k + 1,
       category: w.category,
-      // A little lead-in before the first word; never before 0.
-      start: Math.max(0, Math.floor(w.start - 0.3)),
-      end: Math.min(duration || Infinity, Math.ceil(w.end + 0.4)),
+      ...snapToSeconds(units, w.i, w.j, duration),
       title: titleFor(w, span, idf),
       keyLine: keyLineFor(w, span, type),
       excerpt: tidy(span.map((u) => u.text).join(" ")),
