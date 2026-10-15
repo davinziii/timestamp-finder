@@ -1,20 +1,32 @@
 "use client";
 
 import Link from "next/link";
-import type { ClipSpec } from "@/lib/clip";
-import { formatTimestamp } from "@/lib/timestamp";
+import { useLayoutEffect, useState } from "react";
+import type { ClipDraft, ClipSpec } from "@/lib/clip";
+import { formatClipLength, formatTimestamp } from "@/lib/timestamp";
 import { buildTimestampUrl } from "@/lib/youtube";
 import { CATEGORY_LABELS, type ClipPotential, type Moment } from "@/types/moments";
-import { Button, buttonClass, CheckIcon, CopyIcon, DownloadIcon, PlayIcon } from "./Button";
-import { clipLength, DownloadStatus } from "./TimestampResult";
-import type { DownloadState } from "./useClipDownloads";
+import { buttonClass, CopyButton, PlayIcon, type CopyFn } from "./Button";
+import { ClipEditor } from "./ClipEditor";
+import { ClipPreview } from "./ClipPreview";
+import type { DownloadState, LocalDownloads } from "./useClipDownloads";
 
-export const clipRange = (m: Moment) => `${formatTimestamp(m.start)}–${formatTimestamp(m.end)}`;
+/** A moment's range after the user's adjustments (seconds). */
+export interface Range {
+  start: number;
+  end: number;
+}
+
+export const formatRange = (r: Range) => `${formatTimestamp(r.start)}–${formatTimestamp(r.end)}`;
 
 /** Link that opens the Timestamp Finder with this video, the key line and the clip range filled in. */
-export function finderHref(videoUrl: string, m: Moment): string {
-  const q = m.keyLine.split(" ").slice(0, 18).join(" ");
-  const params = new URLSearchParams({ url: videoUrl, q, start: formatTimestamp(m.start), end: formatTimestamp(m.end) });
+export function finderHref(videoId: string, m: Moment, r: Range): string {
+  const params = new URLSearchParams({
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    q: m.keyLine.split(" ").slice(0, 18).join(" "),
+    start: formatTimestamp(r.start),
+    end: formatTimestamp(r.end),
+  });
   return `/?${params}`;
 }
 
@@ -27,10 +39,16 @@ const POTENTIAL_STYLES: Record<ClipPotential, string> = {
 export function MomentCard({
   moment: m,
   videoId,
+  videoDuration,
+  range,
+  adjusted,
   selected,
   onSelect,
-  spec,
-  canDownload,
+  draft,
+  defaultName,
+  onDraftChange,
+  onReset,
+  local,
   download,
   onDownload,
   onCancel,
@@ -39,20 +57,31 @@ export function MomentCard({
 }: {
   moment: Moment;
   videoId: string;
+  videoDuration: number;
+  /** The range in use: the suggestion, or the user's valid adjustment. */
+  range: Range;
+  adjusted: boolean;
   selected: boolean;
   onSelect: (selected: boolean) => void;
-  spec: ClipSpec;
-  canDownload: boolean;
+  draft: ClipDraft;
+  /** File name used while the name field is empty. */
+  defaultName: string;
+  onDraftChange: (d: ClipDraft) => void;
+  onReset: () => void;
+  local: LocalDownloads;
   download: DownloadState | undefined;
-  onDownload: () => void;
+  onDownload: (spec: ClipSpec) => void;
   onCancel: () => void;
   copied: string | null;
-  copy: (key: string, text: string) => void;
+  copy: CopyFn;
 }) {
-  const ts = formatTimestamp(m.start);
-  const url = buildTimestampUrl(videoId, m.start);
+  const [previewing, setPreviewing] = useState(false);
+  // Next keeps a page mounted (hidden) after navigating away; stop the player so it doesn't keep playing.
+  useLayoutEffect(() => () => setPreviewing(false), []);
+  const [editing, setEditing] = useState(false);
+  const ts = formatTimestamp(range.start);
+  const url = buildTimestampUrl(videoId, range.start);
   const k = (s: string) => `${m.rank}:${s}`;
-  const busy = download?.status === "running" || download?.status === "queued";
 
   return (
     <article
@@ -67,11 +96,11 @@ export function MomentCard({
             checked={selected}
             onChange={(e) => onSelect(e.target.checked)}
             className="size-4 accent-[var(--accent)]"
-            aria-label={`Select moment ${m.rank}`}
           />
           <span className="font-mono tracking-wider text-muted uppercase">
             Moment {m.rank} · {CATEGORY_LABELS[m.category]}
           </span>
+          <span className="sr-only">Select this moment</span>
         </label>
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${POTENTIAL_STYLES[m.potential]}`}
@@ -91,9 +120,17 @@ export function MomentCard({
           className="font-mono text-2xl font-semibold tracking-tight tabular-nums hover:text-accent"
           title={`Open at ${ts}`}
         >
-          {clipRange(m)}
+          {formatRange(range)}
         </a>
-        <span className="font-mono text-xs text-faint tabular-nums">{clipLength(m.end - m.start)}</span>
+        <span className="font-mono text-xs text-faint tabular-nums">{formatClipLength(range.end - range.start)}</span>
+        {adjusted && (
+          <span className="text-xs text-faint">
+            Adjusted from {formatRange(m)} ·{" "}
+            <button type="button" onClick={onReset} className="underline decoration-line-strong underline-offset-2 hover:text-fg">
+              Reset
+            </button>
+          </span>
+        )}
       </div>
 
       <p className="mt-3 text-[15px] leading-relaxed text-pretty">&ldquo;{m.keyLine}&rdquo;</p>
@@ -124,33 +161,53 @@ export function MomentCard({
       </details>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <a href={url} target="_blank" rel="noopener noreferrer" className={buttonClass("primary", "sm")}>
-          <PlayIcon /> Watch on YouTube
+        <button
+          type="button"
+          onClick={() => setPreviewing((p) => !p)}
+          aria-pressed={previewing}
+          className={buttonClass("primary", "sm")}
+        >
+          <PlayIcon /> {previewing ? "Hide preview" : "Preview clip"}
+        </button>
+        <a href={url} target="_blank" rel="noopener noreferrer" className={buttonClass("secondary", "sm")}>
+          Watch on YouTube
         </a>
-        <CopyButton label="Copy timestamp" done={copied === k("ts")} onClick={() => copy(k("ts"), ts)} />
-        <CopyButton label="Copy clip range" done={copied === k("range")} onClick={() => copy(k("range"), clipRange(m))} />
-        <Link href={finderHref(`https://www.youtube.com/watch?v=${videoId}`, m)} className={buttonClass("secondary", "sm")}>
+        <CopyButton label="Copy timestamp" copyKey={k("ts")} text={ts} copied={copied} copy={copy} />
+        <CopyButton label="Copy clip range" copyKey={k("range")} text={formatRange(range)} copied={copied} copy={copy} />
+        <Link href={finderHref(videoId, m, range)} className={buttonClass("secondary", "sm")}>
           Use in Timestamp Finder
         </Link>
-        {canDownload &&
-          (busy ? (
-            <Button onClick={onCancel}>Cancel</Button>
-          ) : (
-            <Button onClick={onDownload} title={`Download ${spec.name}.mp4`}>
-              <DownloadIcon /> {download?.status === "done" ? "Download again" : "Download clip"}
-            </Button>
-          ))}
+        <button
+          type="button"
+          onClick={() => setEditing((e) => !e)}
+          aria-expanded={editing}
+          className={buttonClass(editing ? "secondary" : "ghost", "sm")}
+        >
+          {editing ? "Close editor" : local.status === "ready" ? "Adjust & download" : "Adjust clip"}
+        </button>
       </div>
-      {download && <DownloadStatus state={download} />}
-    </article>
-  );
-}
 
-function CopyButton({ label, done, onClick }: { label: string; done: boolean; onClick: () => void }) {
-  return (
-    <Button onClick={onClick} aria-live="polite">
-      {done ? <CheckIcon className="size-3.5 text-ok" /> : <CopyIcon />}
-      {done ? "Copied" : label}
-    </Button>
+      {previewing && <ClipPreview videoId={videoId} start={range.start} end={range.end} />}
+
+      {(editing || download) && (
+        <ClipEditor
+          videoId={videoId}
+          videoDuration={videoDuration}
+          draft={draft}
+          onChange={onDraftChange}
+          fallbackName={defaultName}
+          quality="1080"
+          qualityControl={null}
+          local={local}
+          download={download}
+          onDownload={onDownload}
+          onCancel={onCancel}
+          copyKey={k}
+          copied={copied}
+          copy={copy}
+          showPreview={false}
+        />
+      )}
+    </article>
   );
 }

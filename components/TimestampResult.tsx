@@ -1,37 +1,25 @@
 "use client";
 
-import { CLIP_LIMITS, ytDlpCommand, type ClipQuality, type ClipSpec } from "@/lib/clip";
+import type { ClipDraft, ClipQuality, ClipSpec } from "@/lib/clip";
 import { MATCHING } from "@/lib/config";
-import { formatTimestamp, parseTimestamp } from "@/lib/timestamp";
+import { formatTimestamp } from "@/lib/timestamp";
 import { buildTimestampUrl } from "@/lib/youtube";
 import type { Match, SentenceResult } from "@/types/search";
-import { Button, buttonClass, CheckIcon, CopyIcon, DownloadIcon, PlayIcon } from "./Button";
-import { QualityToggle } from "./QualityToggle";
-import { formatBytes, revealClip, type DownloadState } from "./useClipDownloads";
-
-type CopyFn = (key: string, text: string) => void;
-
-export interface ClipDraft {
-  name: string;
-  start: string;
-  end: string;
-  /** This clip's own resolution; undefined = follow the global default. */
-  quality?: ClipQuality;
-}
+import { buttonClass, CheckIcon, CopyButton, PlayIcon, type CopyFn } from "./Button";
+import { ClipEditor, type QualityControl } from "./ClipEditor";
+import type { DownloadState, LocalDownloads } from "./useClipDownloads";
 
 export function TimestampResult({
   result,
   videoId,
+  videoDuration,
   selected,
   onSelect,
   draft,
   onDraftChange,
   quality,
-  onQualityChange,
-  qualityLabels,
-  qualityHints,
-  cpuEncoding,
-  canDownload,
+  qualityControl,
+  local,
   download,
   onDownload,
   onCancel,
@@ -40,6 +28,7 @@ export function TimestampResult({
 }: {
   result: SentenceResult;
   videoId: string;
+  videoDuration: number;
   /** Index into [best, ...alternatives] that the user picked. */
   selected: number;
   onSelect: (i: number) => void;
@@ -47,11 +36,8 @@ export function TimestampResult({
   onDraftChange: (d: ClipDraft) => void;
   quality: ClipQuality;
   /** null when the video has nothing above 1080p. */
-  onQualityChange: ((q: ClipQuality) => void) | null;
-  qualityLabels: Record<ClipQuality, string>;
-  qualityHints: Record<ClipQuality, string>;
-  cpuEncoding: boolean;
-  canDownload: boolean;
+  qualityControl: QualityControl | null;
+  local: LocalDownloads;
   download: DownloadState | undefined;
   onDownload: (spec: ClipSpec) => void;
   onCancel: () => void;
@@ -117,8 +103,8 @@ export function TimestampResult({
         <a href={url} target="_blank" rel="noopener noreferrer" className={buttonClass("primary", "sm")}>
           <PlayIcon /> Watch at {ts}
         </a>
-        <CopyButton label="Copy timestamp" done={copied === k("ts")} onClick={() => copy(k("ts"), ts)} />
-        <CopyButton label="Copy YouTube link" done={copied === k("url")} onClick={() => copy(k("url"), url)} />
+        <CopyButton label="Copy timestamp" copyKey={k("ts")} text={ts} copied={copied} copy={copy} />
+        <CopyButton label="Copy YouTube link" copyKey={k("url")} text={url} copied={copied} copy={copy} />
       </div>
 
       {result.alternatives.length > 0 && (
@@ -135,16 +121,14 @@ export function TimestampResult({
       )}
 
       {draft && (
-        <ClipPanel
+        <ClipEditor
+          videoId={videoId}
+          videoDuration={videoDuration}
           draft={draft}
           onChange={onDraftChange}
-          videoId={videoId}
           quality={quality}
-          onQualityChange={onQualityChange}
-          qualityLabels={qualityLabels}
-          qualityHints={qualityHints}
-          cpuEncoding={cpuEncoding}
-          canDownload={canDownload}
+          qualityControl={qualityControl}
+          local={local}
           download={download}
           onDownload={onDownload}
           onCancel={onCancel}
@@ -215,231 +199,5 @@ function MatchChip({ m, active, best, onClick }: { m: Match; active: boolean; be
       <span className="font-mono tabular-nums text-faint">{Math.round(m.score * 100)}%</span>
       {best && <span className="text-[10px] tracking-wide text-faint uppercase">best</span>}
     </button>
-  );
-}
-
-function CopyButton({ label, done, onClick }: { label: string; done: boolean; onClick: () => void }) {
-  return (
-    <Button onClick={onClick} aria-live="polite">
-      {done ? <CheckIcon className="size-3.5 text-ok" /> : <CopyIcon />}
-      {done ? "Copied" : label}
-    </Button>
-  );
-}
-
-function ClipPanel({
-  draft,
-  onChange,
-  videoId,
-  quality,
-  onQualityChange,
-  qualityLabels,
-  qualityHints,
-  cpuEncoding,
-  canDownload,
-  download,
-  onDownload,
-  onCancel,
-  copyKey,
-  copied,
-  copy,
-}: {
-  draft: ClipDraft;
-  onChange: (d: ClipDraft) => void;
-  videoId: string;
-  quality: ClipQuality;
-  onQualityChange: ((q: ClipQuality) => void) | null;
-  qualityLabels: Record<ClipQuality, string>;
-  qualityHints: Record<ClipQuality, string>;
-  cpuEncoding: boolean;
-  canDownload: boolean;
-  download: DownloadState | undefined;
-  onDownload: (spec: ClipSpec) => void;
-  onCancel: () => void;
-  copyKey: (s: string) => string;
-  copied: string | null;
-  copy: CopyFn;
-}) {
-  const s = parseTimestamp(draft.start);
-  const e = parseTimestamp(draft.end);
-  const rangeOk = s !== null && e !== null && e > s;
-  const tooLong = rangeOk && e - s > CLIP_LIMITS.maxDurationSeconds;
-  const valid = rangeOk && !tooLong && draft.name.trim().length > 0;
-  const range = rangeOk ? `${formatTimestamp(s)} - ${formatTimestamp(e)}` : "";
-  const spec: ClipSpec | null = valid ? { videoId, start: s, end: e, name: draft.name, quality } : null;
-  const busy = download?.status === "running" || download?.status === "queued";
-
-  return (
-    <div className="mt-4 rounded-lg bg-surface-2 p-3">
-      <label className="block">
-        <span className="mb-1 block text-[11px] font-medium tracking-wider text-faint uppercase">Clip name</span>
-        <input
-          value={draft.name}
-          onChange={(ev) => onChange({ ...draft, name: ev.target.value })}
-          maxLength={CLIP_LIMITS.maxNameLength}
-          spellCheck={false}
-          disabled={busy}
-          aria-invalid={!draft.name.trim()}
-          className={`h-8 w-full rounded-md border bg-surface px-2 text-[13px] outline-none focus:ring-4 focus:ring-[var(--ring)] disabled:opacity-60 ${
-            draft.name.trim() ? "border-line focus:border-line-strong" : "border-bad"
-          }`}
-        />
-      </label>
-
-      <div className="mt-3 flex flex-wrap items-end gap-3">
-        <TimeField
-          label="Clip start"
-          value={draft.start}
-          onChange={(v) => onChange({ ...draft, start: v })}
-          invalid={s === null}
-        />
-        <TimeField
-          label="End"
-          value={draft.end}
-          onChange={(v) => onChange({ ...draft, end: v })}
-          invalid={e === null || (s !== null && e <= s)}
-        />
-        {rangeOk && (
-          <p className={`pb-1.5 font-mono text-xs tabular-nums ${tooLong ? "text-bad" : "text-faint"}`}>
-            {clipLength(e - s)}
-            {tooLong && ` · max ${CLIP_LIMITS.maxDurationSeconds / 60} min`}
-          </p>
-        )}
-        {onQualityChange && (
-          <div className="pb-0.5">
-            <span className="mb-1 block text-[11px] font-medium tracking-wider text-faint uppercase">Resolution</span>
-            <QualityToggle
-              small
-              value={quality}
-              onChange={onQualityChange}
-              labels={qualityLabels}
-              hints={qualityHints}
-            />
-          </div>
-        )}
-        {rangeOk && !tooLong && canDownload && cpuEncoding && (
-          <p className="pb-1.5 text-xs text-faint">≈ {encodeEstimate(e - s, quality)} to make</p>
-        )}
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {canDownload &&
-          (busy ? (
-            <Button onClick={onCancel}>Cancel</Button>
-          ) : (
-            <Button variant="primary" disabled={!spec} onClick={() => spec && onDownload(spec)}>
-              <DownloadIcon /> {download?.status === "done" ? "Download again" : "Download clip"}
-            </Button>
-          ))}
-        <Button disabled={!rangeOk} onClick={() => copy(copyKey("clip"), range)}>
-          {copied === copyKey("clip") ? <CheckIcon className="size-3.5 text-ok" /> : <CopyIcon />}
-          {copied === copyKey("clip") ? "Copied" : "Copy clip range"}
-        </Button>
-        <Button disabled={!spec} onClick={() => spec && copy(copyKey("cmd"), ytDlpCommand(spec))}>
-          {copied === copyKey("cmd") ? <CheckIcon className="size-3.5 text-ok" /> : <CopyIcon />}
-          {copied === copyKey("cmd") ? "Copied" : "Copy download command"}
-        </Button>
-        {rangeOk && (
-          <a href={buildTimestampUrl(videoId, s)} target="_blank" rel="noopener noreferrer" className={buttonClass("ghost", "sm")}>
-            <PlayIcon /> Preview
-          </a>
-        )}
-      </div>
-
-      {download && <DownloadStatus state={download} />}
-    </div>
-  );
-}
-
-/** 60 -> "1:00", 45 -> "45s" */
-export function clipLength(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-/**
- * Rough CPU (x264) time to download + encode, measured on a 12-thread machine:
- * ~3.3x the clip length at 1080p, ~11x at 4K.
- */
-function encodeEstimate(seconds: number, quality: ClipQuality): string {
-  const total = seconds * (quality === "best" ? 11 : 3.3);
-  if (total < 60) return `${Math.max(10, Math.round(total / 10) * 10)} s`;
-  return `${Math.round(total / 60)} min`;
-}
-
-export function DownloadStatus({ state }: { state: DownloadState }) {
-  if (state.status === "queued") {
-    return <p className="mt-3 text-xs text-faint">Waiting in queue…</p>;
-  }
-  if (state.status === "running") {
-    return (
-      <div className="mt-3" aria-live="polite">
-        <div className="flex justify-between text-xs text-muted">
-          <span>{state.message}</span>
-          {state.percent !== null && <span className="font-mono tabular-nums">{state.percent}%</span>}
-        </div>
-        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line">
-          {state.percent === null ? (
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-accent/60" />
-          ) : (
-            <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${state.percent}%` }} />
-          )}
-        </div>
-      </div>
-    );
-  }
-  if (state.status === "error") {
-    return (
-      <p role="alert" className="mt-3 text-xs text-bad">
-        Download failed: {state.message}
-      </p>
-    );
-  }
-  const fileName = state.file.split(/[\\/]/).pop();
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" aria-live="polite">
-      <span className="inline-flex items-center gap-1 font-medium text-ok">
-        <CheckIcon className="size-3.5" /> Saved
-      </span>
-      <span className="min-w-0 truncate font-mono text-muted" title={state.file}>
-        {fileName}
-      </span>
-      <span className="font-mono text-faint">{formatBytes(state.sizeBytes)}</span>
-      <button
-        type="button"
-        onClick={() => revealClip(state.file)}
-        className="text-muted underline decoration-line-strong underline-offset-2 hover:text-fg"
-      >
-        Show in folder
-      </button>
-    </div>
-  );
-}
-
-export function TimeField({
-  label,
-  value,
-  onChange,
-  invalid,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  invalid: boolean;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-[11px] font-medium tracking-wider text-faint uppercase">{label}</span>
-      <input
-        value={value}
-        onChange={(ev) => onChange(ev.target.value)}
-        inputMode="numeric"
-        spellCheck={false}
-        aria-invalid={invalid}
-        className={`h-8 w-24 rounded-md border bg-surface px-2 font-mono text-[13px] tabular-nums outline-none focus:ring-4 focus:ring-[var(--ring)] ${
-          invalid ? "border-bad" : "border-line focus:border-line-strong"
-        }`}
-      />
-    </label>
   );
 }

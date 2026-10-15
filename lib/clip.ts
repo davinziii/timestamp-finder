@@ -1,4 +1,4 @@
-import { formatTimestamp } from "./timestamp";
+import { formatTimestamp, parseTimestamp } from "./timestamp";
 
 /*
  * Clip download helpers shared by the browser (copyable yt-dlp commands) and
@@ -102,6 +102,59 @@ export function validateClip(spec: ClipSpec): string | null {
     return `Clips can be at most ${CLIP_LIMITS.maxDurationSeconds / 60} minutes long.`;
   }
   return null;
+}
+
+/** A clip as the user edits it: times are text until they parse. */
+export interface ClipDraft {
+  name: string;
+  start: string;
+  end: string;
+  /** This clip's own resolution; undefined = follow the default. */
+  quality?: ClipQuality;
+}
+
+export interface RangeError {
+  field: "start" | "end";
+  message: string;
+}
+
+/**
+ * Checks a typed start/end pair. Empty fields aren't errors yet (still being
+ * typed). Negative times never parse, so they are reported as invalid times.
+ * durationSeconds = 0 means the video length is unknown.
+ */
+export function checkRange(start: string, end: string, durationSeconds = 0): RangeError | null {
+  const s = parseTimestamp(start);
+  const e = parseTimestamp(end);
+  if (start.trim() && s === null) return { field: "start", message: "Enter the start as a time, like 1:30 or 1:02:30." };
+  if (end.trim() && e === null) return { field: "end", message: "Enter the end as a time, like 2:30 or 1:04:00." };
+  if (s === null || e === null) return null;
+  if (durationSeconds > 0 && s >= durationSeconds) {
+    return { field: "start", message: `The video is only ${formatTimestamp(durationSeconds)} long.` };
+  }
+  if (e <= s) return { field: "end", message: "The end time must be later than the start time." };
+  if (durationSeconds > 0 && e > durationSeconds + 1) {
+    return { field: "end", message: `The video ends at ${formatTimestamp(durationSeconds)}.` };
+  }
+  if (e - s > CLIP_LIMITS.maxDurationSeconds) {
+    return { field: "end", message: `Clips can be at most ${CLIP_LIMITS.maxDurationSeconds / 60} minutes long.` };
+  }
+  return null;
+}
+
+/** The downloadable clip for a draft, or null while it is incomplete or invalid. */
+export function draftToSpec(
+  videoId: string,
+  d: ClipDraft,
+  quality: ClipQuality,
+  durationSeconds = 0,
+  fallbackName = "clip",
+): ClipSpec | null {
+  const start = parseTimestamp(d.start);
+  const end = parseTimestamp(d.end);
+  if (start === null || end === null || checkRange(d.start, d.end, durationSeconds)) return null;
+  const spec = { videoId, start, end, name: d.name.trim() || fallbackName, quality };
+  return validateClip(spec) ? null : spec;
 }
 
 /** yt-dlp arguments (without the output location). */

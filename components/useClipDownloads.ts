@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipSpec } from "@/lib/clip";
+import { readNdjson } from "./ndjson";
 
 export type LocalDownloads =
   | { status: "checking" }
@@ -20,22 +21,34 @@ type ServerEvent =
   | { type: "done"; file: string; sizeBytes: number }
   | { type: "error"; message: string };
 
+let localCheck: Promise<LocalDownloads> | null = null;
+
+/** One check per page load, shared by every panel that offers downloads. */
+function checkLocalDownloads(): Promise<LocalDownloads> {
+  const unavailable: LocalDownloads = { status: "unavailable", reason: "Downloads aren't available here." };
+  localCheck ??= fetch("/api/clip", { cache: "no-store" })
+    .then((r) => r.json())
+    .then(
+      (d: { enabled: boolean; reason?: string; folder?: string; version?: string; encoder?: string }): LocalDownloads =>
+        d.enabled
+          ? { status: "ready", folder: d.folder ?? "", version: d.version ?? "", encoder: d.encoder ?? "libx264" }
+          : { status: "unavailable", reason: d.reason ?? "Downloads aren't available here." },
+    )
+    .catch(() => {
+      localCheck = null; // try again next time
+      return unavailable;
+    });
+  return localCheck;
+}
+
 /** Whether this app can save clips to disk (only when running locally with yt-dlp). */
 export function useLocalDownloads(): LocalDownloads {
   const [state, setState] = useState<LocalDownloads>({ status: "checking" });
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/clip", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d: { enabled: boolean; reason?: string; folder?: string; version?: string; encoder?: string }) => {
-        if (cancelled) return;
-        setState(
-          d.enabled
-            ? { status: "ready", folder: d.folder ?? "", version: d.version ?? "", encoder: d.encoder ?? "libx264" }
-            : { status: "unavailable", reason: d.reason ?? "Downloads aren't available here." },
-        );
-      })
-      .catch(() => !cancelled && setState({ status: "unavailable", reason: "Downloads aren't available here." }));
+    checkLocalDownloads().then((s) => {
+      if (!cancelled) setState(s);
+    });
     return () => {
       cancelled = true;
     };
@@ -71,32 +84,21 @@ export function useClipDownloads() {
           set(key, { status: "error", message: d?.reason ?? `Download failed (${res.status}).` });
           return;
         }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
         let last: DownloadState = { status: "running", message: "Starting…", percent: null };
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (!line) continue;
-            const ev = JSON.parse(line) as ServerEvent;
-            if (ev.type === "status") {
-              last = { status: "running", message: ev.message, percent: last.status === "running" ? last.percent : null };
-            } else if (ev.type === "progress") {
-              last = { status: "running", message: "Downloading clip…", percent: ev.percent };
-            } else if (ev.type === "done") {
-              last = { status: "done", file: ev.file, sizeBytes: ev.sizeBytes };
-            } else {
-              last = { status: "error", message: ev.message };
-            }
-            set(key, last);
+        await readNdjson<ServerEvent>(res, (ev) => {
+          const running = last.status === "running" ? last : null;
+          if (ev.type === "status") {
+            last = { status: "running", message: ev.message, percent: running?.percent ?? null };
+          } else if (ev.type === "progress") {
+            // Keep the server's latest wording ("Downloading video…", "Downloading clip…").
+            last = { status: "running", message: running?.message ?? "Downloading…", percent: ev.percent };
+          } else if (ev.type === "done") {
+            last = { status: "done", file: ev.file, sizeBytes: ev.sizeBytes };
+          } else {
+            last = { status: "error", message: ev.message };
           }
-        }
+          set(key, last);
+        });
         if (last.status === "running") set(key, { status: "error", message: "The download stopped unexpectedly." });
       } catch (e) {
         if ((e as Error).name === "AbortError") {
@@ -123,12 +125,6 @@ export function useClipDownloads() {
       for (const k of keys) next[k] = { status: "queued" };
       return next;
     });
-  }, []);
-
-  // Stop any running downloads when the results go away.
-  useEffect(() => {
-    const map = controllers.current;
-    return () => map.forEach((c) => c.abort());
   }, []);
 
   return { states, download, cancel, queue };

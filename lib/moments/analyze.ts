@@ -275,7 +275,7 @@ interface Window {
   total: number;
   category: MomentCategory;
   strength: number;
-  /** Distinct pieces of evidence for the category (cue phrases, laughter, comment reactions). */
+  /** Distinct pieces of evidence for the category (cue phrases, laughter, comment reactions). Set once picked. */
   distinct: number;
 }
 
@@ -283,10 +283,46 @@ interface Context {
   units: Unit[];
   type: MomentType;
   replay: Replay | null;
+  /** Sorted by time. */
   mentions: Mention[];
   chapters: Chapter[];
   titleTokens: Set<string>;
   duration: number;
+  totals: Totals;
+}
+
+type Summed = "ad" | "laughter" | "turns" | "numbers" | "applause" | CueCategory;
+
+/** Running totals over units, so any window's sum is one subtraction. */
+interface Totals {
+  sum(key: Summed, i: number, j: number): number;
+}
+
+function runningTotals(units: Unit[]): Totals {
+  const keys: Summed[] = ["ad", "laughter", "turns", "numbers", "applause", ...CATEGORIES];
+  const value = (u: Unit, k: Summed) =>
+    k === "ad" || k === "laughter" || k === "turns" || k === "numbers" || k === "applause" ? u[k] : u.cues[k];
+  const table = new Map<Summed, Float64Array>();
+  for (const k of keys) {
+    const t = new Float64Array(units.length + 1);
+    units.forEach((u, idx) => (t[idx + 1] = t[idx] + value(u, k)));
+    table.set(k, t);
+  }
+  return { sum: (k, i, j) => table.get(k)![j + 1] - table.get(k)![i] };
+}
+
+/** Mentions with time in [from, to]; `sorted` is ordered by time. */
+function mentionsBetween(sorted: Mention[], from: number, to: number): Mention[] {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].time < from) lo = mid + 1;
+    else hi = mid;
+  }
+  const out: Mention[] = [];
+  for (let k = lo; k < sorted.length && sorted[k].time <= to; k++) out.push(sorted[k]);
+  return out;
 }
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
@@ -307,13 +343,12 @@ const AD_CHAPTER = /sponsor|\bads?\b|advert|promo|merch|patreon/i;
 function scoreWindow(ctx: Context, i: number, j: number): Window | null {
   const { units, type } = ctx;
   const [, ideal] = LENGTHS[type];
-  const span = units.slice(i, j + 1);
   const start = units[i].start;
   const end = units[j].end;
   const dur = end - start;
+  const sum = (k: Summed) => ctx.totals.sum(k, i, j);
 
-  const ad = span.reduce((n, u) => n + u.ad, 0);
-  if (ad >= 2) return null;
+  if (sum("ad") >= 2) return null;
 
   const chapter = chapterAt(ctx.chapters, start + 3);
   if (chapter && AD_CHAPTER.test(chapter.title)) return null;
@@ -321,22 +356,25 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
 
   // Long windows collect more cues by size alone; damp that.
   const lenNorm = Math.sqrt(Math.max(dur, 20) / ideal);
-  const sum = (f: (u: Unit) => number) => span.reduce((n, u) => n + f(u), 0);
-  const laughter = Math.min(3, sum((u) => u.laughter));
-  const turns = Math.min(4, sum((u) => u.turns));
-  const numbers = sum((u) => u.numbers);
-  const mentions = ctx.mentions.filter((m) => m.time >= start - 3 && m.time <= end + 3);
+  const laughter = Math.min(3, sum("laughter"));
+  const turns = Math.min(4, sum("turns"));
+  const numbers = sum("numbers");
+  const mentions = mentionsBetween(ctx.mentions, start - 3, end + 3);
   // A top comment reacting to this exact moment ("12:40 😂") is real evidence for a category.
   const hint = (c: CueCategory) => Math.min(2.4, mentions.filter((m) => m.hints.includes(c)).length * 1.2);
-  const titleOverlap = new Set(span.flatMap((u) => u.tokens).filter((x) => ctx.titleTokens.has(x))).size;
+  const titleHits = new Set<string>();
+  if (ctx.titleTokens.size) {
+    for (let k = i; k <= j; k++) for (const t of units[k].tokens) if (ctx.titleTokens.has(t)) titleHits.add(t);
+  }
+  const titleOverlap = titleHits.size;
 
   const cat = {} as Record<CueCategory, number>;
-  for (const c of CATEGORIES) cat[c] = sum((u) => u.cues[c]) / lenNorm + hint(c);
+  for (const c of CATEGORIES) cat[c] = sum(c) / lenNorm + hint(c);
   cat.funny += 2.2 * laughter + (cat.funny > 0 ? 0.2 * turns : 0);
   cat.informative += 0.15 * Math.min(6, numbers) + 0.3 * Math.min(3, titleOverlap);
   cat.controversial += cat.controversial > 0 ? 0.15 * turns : 0;
   cat.surprising += 0.1 * Math.min(5, numbers);
-  const applause = sum((u) => u.applause);
+  const applause = sum("applause");
   cat.emotional += 0.8 * Math.min(2, applause);
 
   const replay = ctx.replay?.level(start, end) ?? 0;
@@ -348,8 +386,9 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
   const contextPenalty = contextPenaltyOf(units[i]);
   const lengthFit = 1 - Math.min(1, Math.abs(dur - ideal) / ideal);
   // Hook: the first ~10 seconds.
-  const opening = span.filter((u) => u.start < start + 10);
-  const hook = Math.min(2, opening.reduce((n, u) => n + u.hook, 0)) + (span[0].question ? 0.5 : 0);
+  let openingHook = 0;
+  for (let k = i; k <= j && units[k].start < start + 10; k++) openingHook += units[k].hook;
+  const hook = Math.min(2, openingHook) + (units[i].question ? 0.5 : 0);
 
   const boundary =
     0.6 * startQuality + 0.4 * endQuality - 0.6 * contextPenalty - (crossesChapter ? 0.5 : 0) + 0.3 * lengthFit;
@@ -384,16 +423,9 @@ function scoreWindow(ctx: Context, i: number, j: number): Window | null {
     total = strength + 0.5 * viewer + boundary;
   }
 
-  const distinct =
-    category === "popular"
-      ? mentions.length + (replay >= 0.35 ? 1 : 0)
-      : new Set(span.flatMap((u) => u.cuePhrases[category as CueCategory])).size +
-        (category === "funny" ? laughter : 0) +
-        mentions.filter((m) => m.hints.includes(category as CueCategory)).length;
-
   return {
     i, j, start, end, cat, viewer, replay, mentions, hook, startQuality, endQuality, contextPenalty,
-    crossesChapter, chapter: chapter?.title, total, category, strength, distinct,
+    crossesChapter, chapter: chapter?.title, total, category, strength, distinct: 0,
   };
 }
 
@@ -614,6 +646,17 @@ function explain(w: Window, span: Unit[], type: MomentType): { why: string; sign
   return { why: sentences.join(" "), signals };
 }
 
+function distinctEvidence(w: Window, span: Unit[]): number {
+  if (w.category === "popular") return w.mentions.length + (w.replay >= 0.35 ? 1 : 0);
+  const c = w.category as CueCategory;
+  const laughter = Math.min(3, span.reduce((n, u) => n + u.laughter, 0));
+  return (
+    new Set(span.flatMap((u) => u.cuePhrases[c])).size +
+    (c === "funny" ? laughter : 0) +
+    w.mentions.filter((m) => m.hints.includes(c)).length
+  );
+}
+
 function potentialOf(w: Window, type: MomentType): { potential: ClipPotential; reason: string } {
   const dur = w.end - w.start;
   const selfContained = w.contextPenalty < 0.5 && w.startQuality >= 0.4 && w.endQuality >= 0.4;
@@ -679,7 +722,9 @@ export function findMoments(
     units,
     type,
     replay: replayOf(signals.heatmap.state === "ok" ? signals.heatmap.value : null, duration),
-    mentions: signals.comments.state === "ok" ? commentMentions(signals.comments.value, units, duration) : [],
+    mentions: (signals.comments.state === "ok" ? commentMentions(signals.comments.value, units, duration) : []).sort(
+      (a, b) => a.time - b.time,
+    ),
     chapters: signals.chapters.state === "ok" ? signals.chapters.value : [],
     titleTokens: new Set(
       normalizeText(transcript.video.title)
@@ -687,6 +732,7 @@ export function findMoments(
         .filter((t) => t.length >= 4 && !STOPWORDS.has(t)),
     ),
     duration,
+    totals: runningTotals(units),
   };
 
   const windows = candidateWindows(ctx);
@@ -702,6 +748,7 @@ export function findMoments(
 
   const moments = chosen.map((w, k): Moment => {
     const span = units.slice(w.i, w.j + 1);
+    w.distinct = distinctEvidence(w, span);
     const { why, signals: tags } = explain(w, span, type);
     const { potential, reason } = potentialOf(w, type);
     return {

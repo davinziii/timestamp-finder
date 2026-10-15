@@ -63,3 +63,30 @@ export function PlayIcon({ className = "size-3" }: { className?: string }) {
     </svg>
   );
 }
+
+export type CopyFn = (key: string, text: string) => void;
+
+/** A button that copies text and briefly shows "Copied". Pair with useCopy(). */
+export function CopyButton({
+  label,
+  copyKey,
+  text,
+  copied,
+  copy,
+  disabled,
+}: {
+  label: string;
+  copyKey: string;
+  text: string;
+  copied: string | null;
+  copy: CopyFn;
+  disabled?: boolean;
+}) {
+  const done = copied === copyKey;
+  return (
+    <Button onClick={() => copy(copyKey, text)} disabled={disabled || !text} aria-live="polite">
+      {done ? <CheckIcon className="size-3.5 text-ok" /> : <CopyIcon />}
+      {done ? "Copied" : label}
+    </Button>
+  );
+}

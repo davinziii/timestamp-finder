@@ -294,7 +294,7 @@ function pushWords(out: TranscriptWord[], text: string, startMs: number, endMs: 
 const PROVIDERS: TranscriptProvider[] = [innertubeProvider];
 
 interface CacheEntry<T> {
-  value: T;
+  value: Promise<T>;
   expires: number;
 }
 
@@ -303,17 +303,23 @@ const globalCache = globalThis as unknown as {
 };
 const cache = (globalCache.__transcriptCache ??= new Map());
 
-/** Returns the cached value for a video, computing (and caching) it on miss. */
-export async function cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
+/**
+ * Returns the cached value for a key, computing (and caching) it on miss.
+ * Concurrent callers share one in-flight computation; failures aren't cached.
+ */
+export function cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) {
     // Refresh LRU position.
     cache.delete(key);
     cache.set(key, hit);
-    return hit.value as T;
+    return hit.value as Promise<T>;
   }
-  const value = await compute();
+  const value = compute();
   cache.set(key, { value, expires: Date.now() + TRANSCRIPT_CACHE.ttlMs });
+  value.catch(() => {
+    if (cache.get(key)?.value === value) cache.delete(key);
+  });
   while (cache.size > TRANSCRIPT_CACHE.maxEntries) {
     cache.delete(cache.keys().next().value!);
   }
@@ -325,7 +331,22 @@ export function isCached(key: string): boolean {
   return !!hit && hit.expires > Date.now();
 }
 
-export async function getTranscript(videoId: string): Promise<Transcript> {
+const transcriptKey = (videoId: string) => `transcript:v1:${videoId}`;
+
+/** Whether a video's transcript is already in memory (for "Using cached transcript" messages). */
+export function isTranscriptCached(videoId: string): boolean {
+  return isCached(transcriptKey(videoId));
+}
+
+/**
+ * The transcript for a video, fetched once and shared by every tool for an
+ * hour (Timestamp Finder and Best Moments on the same video cost one fetch).
+ */
+export function getTranscript(videoId: string): Promise<Transcript> {
+  return cached(transcriptKey(videoId), () => fetchTranscript(videoId));
+}
+
+async function fetchTranscript(videoId: string): Promise<Transcript> {
   let lastError: TranscriptError | null = null;
   for (const provider of PROVIDERS) {
     try {

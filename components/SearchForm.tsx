@@ -4,6 +4,7 @@ import { useMemo, useRef } from "react";
 import { parseSentences } from "@/lib/sentences";
 import { Button } from "./Button";
 import { SentenceInput } from "./SentenceInput";
+import { UrlField } from "./UrlField";
 
 export function SearchForm({
   url,
@@ -35,32 +36,7 @@ export function SearchForm({
       className="space-y-5 rounded-xl border border-line bg-surface p-4 shadow-sm sm:p-5"
       noValidate
     >
-      <div>
-        <label htmlFor="url" className="mb-1.5 block text-[13px] font-medium">
-          YouTube URL
-        </label>
-        <input
-          id="url"
-          type="url"
-          inputMode="url"
-          autoComplete="off"
-          spellCheck={false}
-          value={url}
-          disabled={busy}
-          onChange={(e) => onUrlChange(e.target.value)}
-          placeholder="https://www.youtube.com/watch?v=…"
-          aria-invalid={!!urlError}
-          aria-describedby={urlError ? "url-error" : undefined}
-          className={`block h-11 w-full rounded-lg border bg-surface px-3.5 font-mono text-[13px] shadow-xs outline-none placeholder:font-sans placeholder:text-faint focus:ring-4 focus:ring-[var(--ring)] disabled:opacity-60 ${
-            urlError ? "border-bad" : "border-line focus:border-line-strong"
-          }`}
-        />
-        {urlError && (
-          <p id="url-error" className="mt-1.5 text-xs text-bad">
-            {urlError}
-          </p>
-        )}
-      </div>
+      <UrlField value={url} onChange={onUrlChange} error={urlError} disabled={busy} />
 
       <SentenceInput
         value={sentences}

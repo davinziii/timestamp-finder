@@ -1,148 +1,70 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import type { ClipDraft } from "@/lib/clip";
 import { validateSentences } from "@/lib/sentences";
 import { extractVideoId } from "@/lib/youtube";
-import type { ErrorCode, SearchEvent, SearchSummary, SentenceResult } from "@/types/search";
-import type { TranscriptSource, VideoInfo as Video } from "@/types/transcript";
-import { ProcessingStatus, type StatusLine } from "./ProcessingStatus";
+import type { SearchSummary, SentenceResult } from "@/types/search";
+import { ErrorPanel } from "./ErrorPanel";
+import { ProcessingStatus } from "./ProcessingStatus";
 import { SearchForm } from "./SearchForm";
 import { SearchResults } from "./SearchResults";
-import { TrimPanel, type TrimRange } from "./TrimPanel";
+import { TrimPanel } from "./TrimPanel";
+import { useSharedUrl, useVideoJob } from "./useVideoJob";
 import { VideoInfo } from "./VideoInfo";
 
-export interface SearchError {
-  code: ErrorCode;
-  message: string;
-  detail?: string;
-}
-
-interface Outcome {
+interface SearchDone {
+  type: "done";
   results: SentenceResult[];
   summary: SearchSummary;
   elapsedMs: number;
 }
 
-const ERROR_TITLES: Partial<Record<ErrorCode, string>> = {
-  TRANSCRIPT_UNAVAILABLE: "Transcript unavailable",
-  NO_CAPTIONS: "Transcript unavailable",
-  VIDEO_UNAVAILABLE: "Video unavailable",
-  INVALID_INPUT: "Check your input",
-  INTERNAL: "Something went wrong",
-};
+const describeDone = (d: SearchDone) => `Found ${d.summary.found}/${d.summary.total} sentences`;
 
 export function TimestampFinder() {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useSharedUrl();
   const [sentences, setSentences] = useState("");
-  const [urlError, setUrlError] = useState<string | null>(null);
-
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<StatusLine[]>([]);
-  const [video, setVideo] = useState<{ video: Video; source: TranscriptSource } | null>(null);
-  const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const [error, setError] = useState<SearchError | null>(null);
-  const [trimRange, setTrimRange] = useState<TrimRange>({ start: "", end: "" });
+  const [trim, setTrim] = useState<ClipDraft>({ name: "", start: "", end: "" });
   const [trimOpen, setTrimOpen] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const resultsRef = useRef<HTMLDivElement>(null);
+  const job = useVideoJob<SearchDone>("/api/search", { describeDone });
+  const { busy, status, video, result, error, urlError, setUrlError, run, fail, resultsRef } = job;
+
+  const search = useCallback(
+    (input: { url: string; sentences: string }) => {
+      // URL problems come first (run() reports them); then the sentences.
+      if (extractVideoId(input.url)) {
+        const check = validateSentences(input.sentences);
+        if (!check.ok) {
+          setUrlError(null);
+          fail({ code: "INVALID_INPUT", message: check.message });
+          return;
+        }
+      }
+      run(input);
+    },
+    [run, fail, setUrlError],
+  );
 
   /** Arriving from Best Moments: fill in the video, phrase and clip range, then search. */
-  function prefill(p: Prefill) {
-    setUrl(p.url);
-    if (p.q) setSentences(p.q);
-    if (p.start || p.end) {
-      setTrimRange({ start: p.start, end: p.end });
-      setTrimOpen(true);
-    }
-    if (p.q) run({ url: p.url, sentences: p.q });
-  }
-
-  async function run(input: { url: string; sentences: string } = { url, sentences }) {
-    if (busy) return;
-    const videoId = extractVideoId(input.url);
-    if (!videoId) {
-      setUrlError(input.url.trim() ? "Please enter a valid YouTube URL." : "Paste a YouTube video URL.");
-      return;
-    }
-    setUrlError(null);
-    const check = validateSentences(input.sentences);
-    if (!check.ok) {
-      setError({ code: "INVALID_INPUT", message: check.message });
-      setOutcome(null);
-      setStatus([]);
-      return;
-    }
-
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setBusy(true);
-    setError(null);
-    setOutcome(null);
-    setStatus([]);
-    if (video?.video.videoId !== videoId) setVideo(null);
-    requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-
-    try {
-      const res = await fetch("/api/search", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: input.url, sentences: input.sentences }),
-        signal: controller.signal,
-      });
-      if (!res.ok || !res.body) {
-        const ev = (await res.json().catch(() => null)) as SearchEvent | null;
-        if (ev?.type === "error") {
-          if (ev.code === "INVALID_URL") setUrlError(ev.message);
-          else setError(ev);
-        } else {
-          setError({ code: "INTERNAL", message: `The server responded with an error (${res.status}).` });
-        }
-        return;
+  const prefill = useCallback(
+    (p: Prefill) => {
+      setUrl(p.url);
+      if (p.start || p.end) {
+        setTrim((t) => ({ ...t, start: p.start, end: p.end }));
+        setTrimOpen(true);
       }
-
-      // Read the NDJSON stream event by event.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finished = false;
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buffer.indexOf("\n")) !== -1) {
-          const line = buffer.slice(0, nl).trim();
-          buffer = buffer.slice(nl + 1);
-          if (!line) continue;
-          const ev = JSON.parse(line) as SearchEvent;
-          if (ev.type === "status") setStatus((s) => [...s, { stage: ev.stage, message: ev.message }]);
-          else if (ev.type === "video") setVideo({ video: ev.video, source: ev.source });
-          else if (ev.type === "done") {
-            finished = true;
-            setOutcome({ results: ev.results, summary: ev.summary, elapsedMs: ev.elapsedMs });
-            setStatus((s) => [
-              ...s,
-              { stage: "done", message: `Found ${ev.summary.found}/${ev.summary.total} sentences` },
-            ]);
-          } else if (ev.type === "error") {
-            finished = true;
-            setError(ev);
-          }
-        }
+      if (p.q) {
+        setSentences(p.q);
+        search({ url: p.url, sentences: p.q });
       }
-      if (!finished) setError({ code: "INTERNAL", message: "The connection closed before the search finished." });
-    } catch (e) {
-      if ((e as Error).name === "AbortError") return;
-      setError({ code: "INTERNAL", message: "Couldn't reach the server. Check your connection and try again." });
-    } finally {
-      if (abortRef.current === controller) setBusy(false);
-    }
-  }
+    },
+    [setUrl, search],
+  );
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <SearchForm
         url={url}
         sentences={sentences}
@@ -151,19 +73,12 @@ export function TimestampFinder() {
           if (urlError) setUrlError(null);
         }}
         onSentencesChange={setSentences}
-        onSubmit={() => run()}
+        onSubmit={() => search({ url, sentences })}
         busy={busy}
         urlError={urlError}
       />
 
-      <TrimPanel
-        url={url}
-        video={video ? { ...video.video, maxHeight: video.video.maxHeight ?? 0 } : null}
-        range={trimRange}
-        onRangeChange={setTrimRange}
-        open={trimOpen}
-        onOpenChange={setTrimOpen}
-      />
+      <TrimPanel url={url} video={video?.video ?? null} draft={trim} onDraftChange={setTrim} open={trimOpen} onOpenChange={setTrimOpen} />
 
       <Suspense fallback={null}>
         <QueryPrefill onPrefill={prefill} />
@@ -179,11 +94,11 @@ export function TimestampFinder() {
 
         {error && <ErrorPanel error={error} />}
 
-        {outcome && video && (
+        {result && video && (
           <SearchResults
-            key={`${video.video.videoId}-${outcome.elapsedMs}`}
-            results={outcome.results}
-            summary={outcome.summary}
+            key={`${video.video.videoId}-${result.elapsedMs}`}
+            results={result.results}
+            summary={result.summary}
             videoId={video.video.videoId}
             videoDuration={video.video.durationSeconds}
             maxHeight={video.video.maxHeight ?? 0}
@@ -201,37 +116,25 @@ interface Prefill {
   end: string;
 }
 
-/** Reads ?url=&q=&start=&end= once (links from Best Moments), then clears them from the address bar. */
+/**
+ * Reads ?url=&q=&start=&end= (links from Best Moments), then clears them from
+ * the address bar. Runs for every new hand-off: Next keeps this page mounted
+ * between visits, so it isn't a one-time mount.
+ */
 function QueryPrefill({ onPrefill }: { onPrefill: (p: Prefill) => void }) {
   const params = useSearchParams();
-  const done = useRef(false);
+  const handled = useRef("");
   const latest = useRef(onPrefill);
   useEffect(() => {
     latest.current = onPrefill;
   });
   useEffect(() => {
-    if (done.current) return;
-    done.current = true;
     const url = params.get("url");
-    if (!url) return;
+    const key = params.toString();
+    if (!url || key === handled.current) return;
+    handled.current = key;
     window.history.replaceState(null, "", window.location.pathname);
     latest.current({ url, q: params.get("q") ?? "", start: params.get("start") ?? "", end: params.get("end") ?? "" });
   }, [params]);
   return null;
-}
-
-export function ErrorPanel({ error }: { error: SearchError }) {
-  const title = ERROR_TITLES[error.code] ?? "Something went wrong";
-  return (
-    <div role="alert" className="animate-rise rounded-xl border border-bad/30 bg-bad-soft p-4 sm:p-5">
-      <p className="font-medium text-bad">{title}.</p>
-      <p className="mt-1 text-sm leading-relaxed text-fg/80">{error.message}</p>
-      {error.detail && (
-        <details className="mt-3 text-xs text-muted">
-          <summary className="cursor-pointer select-none">Technical details</summary>
-          <p className="mt-1.5 font-mono break-words">{error.detail}</p>
-        </details>
-      )}
-    </div>
-  );
 }

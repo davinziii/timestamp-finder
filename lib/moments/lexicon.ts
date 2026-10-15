@@ -146,23 +146,46 @@ export interface CueHits {
   phrases: string[];
 }
 
+interface CompiledPhrase {
+  phrase: string;
+  rest: string[];
+  weight: number;
+}
+
+/** Phrases grouped by first word, so text is scanned once instead of once per phrase. */
+const compiled = new WeakMap<Lexicon, Map<string, CompiledPhrase[]>>();
+
+function compile(lexicon: Lexicon): Map<string, CompiledPhrase[]> {
+  let byFirst = compiled.get(lexicon);
+  if (byFirst) return byFirst;
+  byFirst = new Map();
+  for (const [phrase, weight] of Object.entries(lexicon)) {
+    const [first, ...rest] = phrase.split(" ");
+    const list = byFirst.get(first) ?? [];
+    list.push({ phrase, rest, weight });
+    byFirst.set(first, list);
+  }
+  compiled.set(lexicon, byFirst);
+  return byFirst;
+}
+
 /** Sums the weights of the lexicon phrases found in normalized text (each phrase counts at most twice). */
 export function scoreText(normalized: string, lexicon: Lexicon): CueHits {
-  const padded = ` ${normalized} `;
+  const byFirst = compile(lexicon);
+  const words = normalized.split(" ");
+  const counts = new Map<CompiledPhrase, number>();
+  for (let i = 0; i < words.length; i++) {
+    const candidates = byFirst.get(words[i]);
+    if (!candidates) continue;
+    for (const c of candidates) {
+      if (c.rest.every((w, k) => words[i + 1 + k] === w)) counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+  }
   let score = 0;
   const phrases: string[] = [];
-  for (const [phrase, weight] of Object.entries(lexicon)) {
-    const needle = ` ${phrase} `;
-    let idx = padded.indexOf(needle);
-    let n = 0;
-    while (idx !== -1 && n < 2) {
-      n++;
-      idx = padded.indexOf(needle, idx + needle.length - 1);
-    }
-    if (n) {
-      score += weight * n;
-      phrases.push(phrase);
-    }
+  for (const [c, n] of counts) {
+    score += c.weight * Math.min(2, n);
+    phrases.push(c.phrase);
   }
   return { score, phrases };
 }

@@ -5,19 +5,20 @@ import {
   CLIP_QUALITY_LABELS,
   DEFAULT_CLIP_SECONDS,
   defaultClipName,
+  draftToSpec,
   offersAbove1080,
   resolutionLabel,
-  validateClip,
   ytDlpCommand,
+  type ClipDraft,
   type ClipQuality,
   type ClipSpec,
 } from "@/lib/clip";
-import { formatTimestamp, parseTimestamp } from "@/lib/timestamp";
+import { formatTimestamp } from "@/lib/timestamp";
 import { buildTimestampUrl } from "@/lib/youtube";
 import type { Match, SearchSummary, SentenceResult } from "@/types/search";
-import { Button, CheckIcon, CopyIcon, DownloadIcon } from "./Button";
+import { Button, CopyButton, DownloadIcon } from "./Button";
 import { QualityToggle } from "./QualityToggle";
-import { TimestampResult, type ClipDraft } from "./TimestampResult";
+import { TimestampResult } from "./TimestampResult";
 import { useCopy } from "./useCopy";
 import { useClipDownloads, useLocalDownloads } from "./useClipDownloads";
 
@@ -31,14 +32,6 @@ function draftFor(r: SentenceResult, m: Match, videoDuration: number, keep?: Cli
     end: formatTimestamp(end),
     quality: keep?.quality,
   };
-}
-
-export function toClipSpec(videoId: string, d: ClipDraft, quality: ClipQuality): ClipSpec | null {
-  const start = parseTimestamp(d.start);
-  const end = parseTimestamp(d.end);
-  if (start === null || end === null) return null;
-  const spec = { videoId, start, end, name: d.name, quality };
-  return validateClip(spec) ? null : spec;
 }
 
 export function SearchResults({
@@ -85,7 +78,7 @@ export function SearchResults({
   const qualityOf = (d: ClipDraft | null): ClipQuality => (canGoHigher ? (d?.quality ?? quality) : "1080");
   const specOf = (r: SentenceResult): ClipSpec | null => {
     const d = draftOf(r);
-    return d ? toClipSpec(videoId, d, qualityOf(d)) : null;
+    return d ? draftToSpec(videoId, d, qualityOf(d), videoDuration) : null;
   };
   const found = results.filter((r) => chosen(r));
 
@@ -149,8 +142,8 @@ export function SearchResults({
         </div>
         {summary.found > 0 && (
           <div className="flex flex-wrap gap-2">
-            <CopyAll label="Copy all timestamps" k="all-ts" text={allTimestamps} copied={copied} copy={copy} />
-            <CopyAll label="Copy all links" k="all-links" text={allLinks} copied={copied} copy={copy} />
+            <CopyButton label="Copy all timestamps" copyKey="all-ts" text={allTimestamps} copied={copied} copy={copy} />
+            <CopyButton label="Copy all links" copyKey="all-links" text={allLinks} copied={copied} copy={copy} />
           </div>
         )}
       </div>
@@ -195,7 +188,7 @@ export function SearchResults({
                     : `Download all clips (${found.length - doneCount})`}
               </Button>
             )}
-            <CopyAll label="Copy all download commands" k="all-cmd" text={allCommands} copied={copied} copy={copy} />
+            <CopyButton label="Copy all download commands" copyKey="all-cmd" text={allCommands} copied={copied} copy={copy} />
           </div>
         </div>
       )}
@@ -208,6 +201,7 @@ export function SearchResults({
               key={r.index}
               result={r}
               videoId={videoId}
+              videoDuration={videoDuration}
               selected={selected[r.index] ?? 0}
               onSelect={(i) => {
                 setSelected((s) => ({ ...s, [r.index]: i }));
@@ -218,20 +212,21 @@ export function SearchResults({
               draft={draft}
               onDraftChange={(d) => setDrafts((all) => ({ ...all, [r.index]: d }))}
               quality={qualityOf(draft)}
-              onQualityChange={
+              qualityControl={
                 canGoHigher && draft
-                  ? (q) =>
-                      setDrafts((all) => ({
-                        ...all,
-                        // Picking the same as the default means "follow the default" again.
-                        [r.index]: { ...draft, quality: q === quality ? undefined : q },
-                      }))
+                  ? {
+                      labels: qualityLabels,
+                      hints: qualityHints,
+                      onChange: (q) =>
+                        setDrafts((all) => ({
+                          ...all,
+                          // Picking the same as the default means "follow the default" again.
+                          [r.index]: { ...draft, quality: q === quality ? undefined : q },
+                        })),
+                    }
                   : null
               }
-              qualityLabels={qualityLabels}
-              qualityHints={qualityHints}
-              cpuEncoding={local.status === "ready" && local.encoder !== "h264_nvenc"}
-              canDownload={local.status === "ready"}
+              local={local}
               download={downloads.states[r.index]}
               onDownload={(spec) => downloads.download(r.index, spec)}
               onCancel={() => downloads.cancel(r.index)}
@@ -242,26 +237,5 @@ export function SearchResults({
         })}
       </div>
     </section>
-  );
-}
-
-function CopyAll({
-  label,
-  k,
-  text,
-  copied,
-  copy,
-}: {
-  label: string;
-  k: string;
-  text: string;
-  copied: string | null;
-  copy: (key: string, text: string) => void;
-}) {
-  return (
-    <Button onClick={() => copy(k, text)} disabled={!text}>
-      {copied === k ? <CheckIcon className="size-3.5 text-ok" /> : <CopyIcon />}
-      {copied === k ? "Copied" : label}
-    </Button>
   );
 }

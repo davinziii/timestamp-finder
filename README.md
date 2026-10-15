@@ -5,6 +5,8 @@ Find the best moments, locate exact timestamps, and prepare clips from YouTube v
 - **Timestamp Finder** (`/`): paste a video and the lines you're looking for, and get a timestamp for every one.
 - **Best Moments** (`/best-moments`): paste a video, pick a moment type, and get a ranked list of moments worth clipping.
 
+The video URL is shared between the two tools (per browser tab), and each video's transcript is fetched once and shared by both (`getTranscript()` caches it for an hour, and concurrent requests share one fetch). Every clip, whether a search result, the trim panel or a Best Moments card, uses the same `ClipEditor`: name, start/end with the same validation everywhere, an inline **Preview clip** player that plays exactly that range, copyable command, and download.
+
 ```bash
 npm install
 npm run dev        # http://localhost:3000
@@ -32,7 +34,7 @@ Pipeline (`lib/moments/`): words → utterance units split at pauses → a candi
 ```
 YouTube URL ─▶ extractVideoId ─▶ Innertube player API (ANDROID, then IOS client)
            ─▶ caption track (auto-generated first, then creator) as json3
-           ─▶ word-level timings ─▶ normalize + index (once per video, cached in memory 1h)
+           ─▶ word-level timings ─▶ normalize + index (transcript and index cached in memory 1h)
 sentences  ─▶ candidate regions via inverted index ─▶ fuzzy word alignment ─▶ rank/dedupe
            ─▶ timestamp + https://www.youtube.com/watch?v=ID&t=SECONDSs
 ```

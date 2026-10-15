@@ -9,6 +9,13 @@ export function formatTimestamp(seconds: number): string {
   return `${String(m).padStart(2, "0")}:${ss}`;
 }
 
+/** Clip length: 60 -> "1:00", 45 -> "45s", 3725 -> "1:02:05" */
+export function formatClipLength(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  return formatTimestamp(total).replace(/^0(?=\d:)/, "");
+}
+
 /** 8040 -> "2h 14m", 1500 -> "25m", 42 -> "42s" */
 export function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);

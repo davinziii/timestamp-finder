@@ -22,6 +22,7 @@ export const MATCHING = {
 } as const;
 
 export const TRANSCRIPT_CACHE = {
-  maxEntries: 30,
+  /** Shared by transcripts, search indexes and Best Moments signals (about three per video). */
+  maxEntries: 60,
   ttlMs: 60 * 60 * 1000,
 } as const;
